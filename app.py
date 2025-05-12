@@ -38,7 +38,7 @@ DATA_DIR = Path("data")
 FLIPS_FILE = DATA_DIR / "flips.csv"
 SEARCHES_FILE = DATA_DIR / "searches.json"
 MAX_RECENT_SEARCHES = 10
-API_TIMEOUT = 15  # Reduced timeout for API calls
+API_TIMEOUT = (25,40)  # (connect, read)
 
 # Debug - Print environment variables to logs (not visible to users)
 print(f"Python version: {sys.version}")
