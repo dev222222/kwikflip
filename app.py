@@ -11,24 +11,50 @@ import requests
 from io import BytesIO
 from PIL import Image
 import os
-import json  # Added missing import
+import json
+import traceback
+import uuid
+import sys
 
-# Load environment variables
+# Set Streamlit page config
+st.set_page_config(
+    page_title="KwikFlip - eBay Research Tool",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# For Render deployment - get PORT from environment
+PORT = int(os.environ.get("PORT", 8501))
+
+# Load environment variables from .env file if it exists
 load_dotenv()
 
 # Configuration
 EBAY_APP_ID = os.getenv("EBAY_APP_ID")
-EBAY_CERT_ID = os.getenv("EBAY_CERT_ID")  # Added for OAuth
-EBAY_DEV_ID = os.getenv("EBAY_DEV_ID")    # Added for OAuth
+EBAY_CERT_ID = os.getenv("EBAY_CERT_ID")
+EBAY_DEV_ID = os.getenv("EBAY_DEV_ID")
 DATA_DIR = Path("data")
 FLIPS_FILE = DATA_DIR / "flips.csv"
 SEARCHES_FILE = DATA_DIR / "searches.json"
 MAX_RECENT_SEARCHES = 10
+API_TIMEOUT = 15  # Reduced timeout for API calls
+
+# Debug - Print environment variables to logs (not visible to users)
+print(f"Python version: {sys.version}")
+print(f"Current working directory: {os.getcwd()}")
+print(f"EBAY_APP_ID exists: {EBAY_APP_ID is not None and EBAY_APP_ID != ''}")
+print(f"EBAY_CERT_ID exists: {EBAY_CERT_ID is not None and EBAY_CERT_ID != ''}")
+print(f"EBAY_DEV_ID exists: {EBAY_DEV_ID is not None and EBAY_DEV_ID != ''}")
+
+# eBay API endpoints
+EBAY_FINDING_API_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
+EBAY_SHOPPING_API_URL = "https://open.api.ebay.com/shopping"
 
 # Create data directory if it doesn't exist
 DATA_DIR.mkdir(exist_ok=True)
 
-# Default theme colors - ReelFarm inspired
+# Default theme colors
 THEME = {
     "primary": "#1e88e5",       # Blue
     "primary_dark": "#1565c0",  # Darker blue
@@ -44,7 +70,7 @@ THEME = {
     "card_border": "#e0e0e0"    # Grey
 }
 
-# Custom styles - ReelFarm inspired
+# Custom styles
 st.markdown(f"""
 <style>
     /* Base styles */
@@ -261,12 +287,328 @@ if "recent_searches" not in st.session_state:
 if "camera_photo" not in st.session_state:
     st.session_state.camera_photo = None
 
-# --- UTILITY FUNCTIONS ---
+if "debug_info" not in st.session_state:
+    st.session_state.debug_info = []
+
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
+# --- EBAY API FUNCTIONS ---
+
+def check_ebay_credentials():
+    """Check if eBay credentials are available and valid"""
+    has_app_id = EBAY_APP_ID is not None and EBAY_APP_ID != ""
+    has_cert_id = EBAY_CERT_ID is not None and EBAY_CERT_ID != ""
+    
+    # Add to debug info
+    log_debug(f"EBAY_APP_ID exists: {has_app_id}")
+    log_debug(f"EBAY_CERT_ID exists: {has_cert_id}")
+    
+    if has_app_id and has_cert_id:
+        log_debug("eBay credentials verification: PASS")
+    else:
+        log_debug("eBay credentials verification: FAIL")
+    
+    return has_app_id and has_cert_id
+
+def log_debug(message):
+    """Add message to debug log and print to console"""
+    timestamp = dt.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    formatted_message = f"[{timestamp}] {message}"
+    
+    # Add to session state debug info
+    if len(st.session_state.debug_info) > 100:
+        st.session_state.debug_info = st.session_state.debug_info[-100:]
+    st.session_state.debug_info.append(formatted_message)
+    
+    # Also print to standard output for server logs
+    print(formatted_message)
+
+def test_ebay_connection():
+    """Test eBay API connection and return status"""
+    if not check_ebay_credentials():
+        return False, "Missing eBay API credentials"
+    
+    try:
+        # Simple test query to check API connectivity
+        params = {
+            'OPERATION-NAME': 'findItemsByKeywords',
+            'SERVICE-VERSION': '1.0.0',
+            'SECURITY-APPNAME': EBAY_APP_ID,
+            'RESPONSE-DATA-FORMAT': 'JSON',
+            'REST-PAYLOAD': 'true',
+            'keywords': 'test',
+            'paginationInput.entriesPerPage': '1',
+            'GLOBAL-ID': 'EBAY-US',
+            'siteid': '0',
+        }
+        
+        log_debug("Testing eBay API connection...")
+        response = requests.get(EBAY_FINDING_API_URL, params=params, timeout=API_TIMEOUT)
+        
+        if response.status_code == 200:
+            log_debug(f"eBay API connection test: SUCCESS (Status: {response.status_code})")
+            return True, "Connection successful"
+        else:
+            log_debug(f"eBay API connection test: FAILED (Status: {response.status_code})")
+            return False, f"eBay API returned status code {response.status_code}"
+    
+    except Exception as e:
+        error_message = f"eBay API connection test: ERROR ({str(e)})"
+        log_debug(error_message)
+        return False, error_message
+
+def search_ebay_finding(query, sold=False, filters=None, limit=30):
+    """Search for items using eBay Finding API"""
+    if not check_ebay_credentials():
+        return None, "eBay API credentials are not configured"
+    
+    try:
+        # Set up the API call
+        operation_name = 'findCompletedItems' if sold else 'findItemsByKeywords'
+        
+        params = {
+            'OPERATION-NAME': operation_name,
+            'SERVICE-VERSION': '1.0.0',
+            'SECURITY-APPNAME': EBAY_APP_ID,
+            'RESPONSE-DATA-FORMAT': 'JSON',
+            'REST-PAYLOAD': 'true',
+            'keywords': query,
+            'paginationInput.entriesPerPage': str(limit),
+            'GLOBAL-ID': 'EBAY-US',  # Set to appropriate market
+            'siteid': '0',           # US site
+        }
+        
+        # Log the request parameters (excluding credentials)
+        safe_params = params.copy()
+        safe_params['SECURITY-APPNAME'] = '[REDACTED]'
+        log_debug(f"eBay API request parameters: {safe_params}")
+        
+        # Add filters
+        filter_index = 0
+        
+        if filters:
+            if filters.get('min_price') is not None:
+                params[f'itemFilter({filter_index}).name'] = 'MinPrice'
+                params[f'itemFilter({filter_index}).value'] = str(filters['min_price'])
+                params[f'itemFilter({filter_index}).paramName'] = 'Currency'
+                params[f'itemFilter({filter_index}).paramValue'] = 'USD'
+                filter_index += 1
+            
+            if filters.get('max_price') is not None:
+                params[f'itemFilter({filter_index}).name'] = 'MaxPrice'
+                params[f'itemFilter({filter_index}).value'] = str(filters['max_price'])
+                params[f'itemFilter({filter_index}).paramName'] = 'Currency'
+                params[f'itemFilter({filter_index}).paramValue'] = 'USD'
+                filter_index += 1
+            
+            if filters.get('condition') and filters['condition'] != 'any':
+                params[f'itemFilter({filter_index}).name'] = 'Condition'
+                # Map condition values to eBay condition IDs
+                condition_map = {
+                    'new': '1000',
+                    'used': '3000',
+                    'for parts or not working': '7000'
+                }
+                params[f'itemFilter({filter_index}).value'] = condition_map.get(filters['condition'], '1000')
+                filter_index += 1
+        
+        # Add sold/completed filters
+        if sold:
+            params[f'itemFilter({filter_index}).name'] = 'SoldItemsOnly'
+            params[f'itemFilter({filter_index}).value'] = 'true'
+            filter_index += 1
+            
+            # Add time filter for completed items
+            if filters and filters.get('days_sold'):
+                end_date = dt.datetime.now()
+                start_date = end_date - dt.timedelta(days=filters['days_sold'])
+                
+                params[f'itemFilter({filter_index}).name'] = 'EndTimeFrom'
+                params[f'itemFilter({filter_index}).value'] = start_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                filter_index += 1
+                
+                params[f'itemFilter({filter_index}).name'] = 'EndTimeTo'
+                params[f'itemFilter({filter_index}).value'] = end_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                filter_index += 1
+        
+        log_debug(f"Making eBay API request to: {EBAY_FINDING_API_URL}")
+        
+        # Make the API call with a shorter timeout
+        response = requests.get(EBAY_FINDING_API_URL, params=params, timeout=API_TIMEOUT)
+        
+        # Log response status
+        log_debug(f"eBay API response status: {response.status_code}")
+        
+        if response.status_code != 200:
+            error_msg = f"eBay API returned status code {response.status_code}"
+            log_debug(error_msg)
+            
+            # Try to get more info from the response
+            try:
+                error_details = response.text[:500]  # Get first 500 chars to avoid huge dumps
+                log_debug(f"Response content: {error_details}")
+            except:
+                pass
+                
+            return None, error_msg
+        
+        # Parse the response
+        data = response.json()
+        
+        # Check for errors
+        if 'errorMessage' in data:
+            error_msg = f"eBay API error: {data['errorMessage'][0]['error'][0]['message'][0]}"
+            log_debug(error_msg)
+            return None, error_msg
+        
+        # Process the results
+        search_result_wrapper = data.get('findCompletedItemsResponse', data.get('findItemsByKeywordsResponse', []))
+        
+        if not search_result_wrapper:
+            log_debug("No response wrapper found in eBay API response")
+            return None, "Invalid response format from eBay API"
+            
+        search_result = search_result_wrapper[0]
+        
+        # Check if there are search results
+        if 'searchResult' not in search_result:
+            log_debug("No searchResult in eBay API response")
+            return None, "No search results found in eBay API response"
+            
+        search_items = search_result.get('searchResult', [{}])[0].get('item', [])
+        
+        log_debug(f"Found {len(search_items)} items in eBay API response")
+        
+        if not search_items:
+            return [], "No items found matching your search criteria"
+        
+        items = []
+        for item in search_items:
+            try:
+                # Extract data from the response
+                item_id = item.get('itemId', [''])[0]
+                title = item.get('title', [''])[0]
+                url = item.get('viewItemURL', [''])[0]
+                
+                # Get price - handle variations in response format
+                try:
+                    current_price = item.get('sellingStatus', [{}])[0].get('currentPrice', [{}])[0]
+                    price = float(current_price.get('__value__', 0))
+                except (IndexError, KeyError, ValueError):
+                    # Try alternate locations if the above path fails
+                    try:
+                        price = float(item.get('sellingStatus', [{}])[0].get('convertedCurrentPrice', [{}])[0].get('__value__', 0))
+                    except (IndexError, KeyError, ValueError):
+                        price = 0.0
+                
+                # Get shipping cost
+                try:
+                    shipping_info = item.get('shippingInfo', [{}])[0]
+                    shipping_cost = shipping_info.get('shippingServiceCost', [{}])[0]
+                    shipping = float(shipping_cost.get('__value__', 0))
+                except (IndexError, KeyError, ValueError):
+                    shipping = 0.0
+                
+                # Get item image
+                try:
+                    gallery_url = item.get('galleryURL', ['https://via.placeholder.com/150'])[0]
+                    if not gallery_url or gallery_url == "":
+                        gallery_url = 'https://via.placeholder.com/150'
+                except (IndexError, KeyError):
+                    gallery_url = 'https://via.placeholder.com/150'
+                
+                # Get end time
+                try:
+                    end_time = item.get('listingInfo', [{}])[0].get('endTime', [''])[0]
+                except (IndexError, KeyError):
+                    end_time = dt.datetime.now().isoformat()
+                
+                # Get condition
+                try:
+                    condition_obj = item.get('condition', [{}])[0]
+                    condition = condition_obj.get('conditionDisplayName', [''])[0]
+                    if not condition:
+                        condition = "Not Specified"
+                except (IndexError, KeyError):
+                    condition = "Not Specified"
+                
+                # Get watchers (if available)
+                try:
+                    listing_info = item.get('listingInfo', [{}])[0]
+                    watchers = int(listing_info.get('watchCount', ['0'])[0])
+                except (IndexError, KeyError, ValueError):
+                    watchers = 0
+                
+                # Build item dictionary
+                item_data = {
+                    "id": item_id,
+                    "title": title,
+                    "url": url,
+                    "image": gallery_url,
+                    "price": price,
+                    "shipping": shipping,
+                    "end_time": end_time,
+                    "watchers": watchers,
+                    "condition": condition,
+                    "sold": sold
+                }
+                
+                items.append(item_data)
+                
+            except Exception as e:
+                error_msg = f"Error processing item: {e}"
+                log_debug(error_msg)
+                # Continue processing other items
+        
+        return items, None
+        
+    except Exception as e:
+        error_msg = f"Error calling eBay API: {e}"
+        log_debug(error_msg)
+        
+        # Get full traceback for debugging
+        tb = traceback.format_exc()
+        log_debug(f"Traceback: {tb}")
+        
+        return None, error_msg
+
+def process_image_search(image_data):
+    """
+    Process image for search (in a real implementation, this would
+    use eBay's Image Recognition API or a similar service)
+    """
+    log_debug("Processing image for search")
+    
+    # In a real implementation, we would send the image to eBay's API
+    # For now, we'll just return a simulated result
+    categories = [
+        "Electronics", "Clothing", "Collectibles", 
+        "Home & Garden", "Toys", "Books", "Other"
+    ]
+    
+    import random
+    
+    # Simulate API recognition result
+    simulated_results = {
+        "query": random.choice([
+            "vintage camera", "smartphone", "retro game console", 
+            "designer watch", "collectible figurine"
+        ]),
+        "category": random.choice(categories),
+        "confidence": random.uniform(0.65, 0.95)
+    }
+    
+    log_debug(f"Image recognition result: {simulated_results}")
+    
+    return simulated_results
 
 def generate_mock_items(count, sold=False):
     """Generate mock item data for demonstration purposes"""
     import random
     from datetime import datetime, timedelta
+    
+    log_debug(f"Generating {count} mock {'sold' if sold else 'active'} items")
     
     items = []
     conditions = ["New", "Used", "Like New", "For parts or not working"]
@@ -328,10 +670,10 @@ def get_recommended_platform(category, avg_price, condition):
         platform = "eBay"
         reason = "Electronics over $100 typically perform well on eBay due to buyer trust and protection."
     elif category == "Home & Garden" and avg_price < 50:
-        platform = "Local Marketplace"
+        platform = "Facebook Marketplace"
         reason = "Bulky home items are often best sold locally to avoid shipping costs."
     elif category == "Clothing" and condition.lower() != "new":
-        platform = "Local Marketplace"
+        platform = "Facebook Marketplace"
         reason = "Used clothing often sells better locally without shipping costs."
     elif category == "Collectibles":
         platform = "eBay"
@@ -351,30 +693,75 @@ def load_recent_searches():
             with open(SEARCHES_FILE, "r") as f:
                 return json.load(f)
         except Exception as e:
-            print(f"Could not load recent searches: {e}")
+            log_debug(f"Could not load recent searches: {e}")
             return []
     return []
 
 def save_recent_searches():
     """Save recent searches to file"""
     try:
+        # Create directory if it doesn't exist
+        DATA_DIR.mkdir(exist_ok=True)
+        
         with open(SEARCHES_FILE, "w") as f:
             json.dump(st.session_state.recent_searches, f)
+        
+        log_debug(f"Saved {len(st.session_state.recent_searches)} recent searches to {SEARCHES_FILE}")
+        return True
     except Exception as e:
-        st.error(f"Error saving recent searches: {e}")
+        error_msg = f"Error saving recent searches: {e}"
+        log_debug(error_msg)
+        st.error(error_msg)
+        return False
 
 def fetch_items(query, sold=False, filters=None, limit=30):
     """Fetch items from eBay API or generate mock data"""
     try:
-        # Display info message
-        st.info("Using mock data for demonstration. eBay API integration is being configured.")
+        # Log start of fetch operation
+        log_debug(f"Fetching {'sold' if sold else 'active'} items for query: '{query}'")
         
-        # Generate mock items safely
+        # Check if eBay credentials are available
+        has_credentials = check_ebay_credentials()
+        
+        if has_credentials:
+            log_debug("Attempting to use eBay API")
+            try:
+                # Attempt to use the eBay API
+                items, error = search_ebay_finding(query, sold, filters, limit)
+                
+                if items is not None:
+                    log_debug(f"Successfully retrieved {len(items)} items from eBay API")
+                    return items, None
+                else:
+                    error_msg = f"eBay API error: {error}. Falling back to mock data."
+                    log_debug(error_msg)
+                    st.warning(error_msg)
+                    # Fall through to mock data
+            except Exception as e:
+                error_msg = f"Error with eBay API: {e}. Falling back to mock data."
+                log_debug(error_msg)
+                
+                # Get full traceback
+                tb = traceback.format_exc()
+                log_debug(f"Traceback: {tb}")
+                
+                st.warning(error_msg)
+                # Fall through to mock data
+        else:
+            log_debug("eBay credentials not found or invalid")
+            st.info("Using mock data for demonstration. eBay API integration is being configured.")
+        
+        # Generate mock items as fallback
         mock_items = []
         try:
+            log_debug("Generating mock data as fallback")
             mock_items = generate_mock_items(count=limit, sold=sold)
+            log_debug(f"Generated {len(mock_items)} mock items")
         except Exception as e:
-            st.error(f"Error generating mock items: {e}")
+            error_msg = f"Error generating mock items: {e}"
+            log_debug(error_msg)
+            st.error(error_msg)
+            
             # Provide basic fallback items
             for i in range(3):
                 mock_items.append({
@@ -392,7 +779,11 @@ def fetch_items(query, sold=False, filters=None, limit=30):
         
         return mock_items, None
     except Exception as e:
-        st.error(f"Error in fetch_items: {e}")
+        error_msg = f"Error in fetch_items: {e}"
+        log_debug(error_msg)
+        log_debug(traceback.format_exc())
+        
+        st.error(error_msg)
         return [], None
 
 def load_flips():
@@ -408,6 +799,7 @@ def load_flips():
     try:
         return pd.read_csv(FLIPS_FILE)
     except Exception as e:
+        log_debug(f"Error loading flips data: {e}")
         st.warning(f"Error loading flips data: {e}")
         return pd.DataFrame()
 
@@ -421,11 +813,18 @@ def save_flip(data):
         # Append new flip
         df = pd.concat([df, pd.DataFrame([data])], ignore_index=True)
         
+        # Create directory if it doesn't exist
+        DATA_DIR.mkdir(exist_ok=True)
+        
         # Save to CSV
         df.to_csv(FLIPS_FILE, index=False)
+        
+        log_debug(f"Saved flip '{data.get('title', 'Unnamed')}' to {FLIPS_FILE}")
         return True
     except Exception as e:
-        st.warning(f"Error saving flip: {e}")
+        error_msg = f"Error saving flip: {e}"
+        log_debug(error_msg)
+        st.warning(error_msg)
         return False
 
 def calculate_stats(items):
@@ -455,7 +854,9 @@ def calculate_stats(items):
             "avg_total": sum(totals) / len(totals) if totals else 0.0
         }
     except Exception as e:
-        st.error(f"Error calculating stats: {e}")
+        error_msg = f"Error calculating stats: {e}"
+        log_debug(error_msg)
+        st.error(error_msg)
         return {
             "count": len(items),
             "avg_price": 0.0,
@@ -508,6 +909,51 @@ def display_sidebar():
         st.markdown("---")
         st.markdown("### About")
         st.markdown("QuickFlip Pro helps you research potential flips on eBay and track your profits.")
+        
+        # Show eBay API status
+        st.markdown("---")
+        has_credentials = check_ebay_credentials()
+        if has_credentials:
+            st.success("✅ eBay API credentials configured")
+            
+            # Add API test button
+            if st.button("Test eBay Connection"):
+                with st.spinner("Testing connection..."):
+                    success, message = test_ebay_connection()
+                    if success:
+                        st.success("✅ eBay API connection successful")
+                    else:
+                        st.error(f"❌ {message}")
+        else:
+            st.warning("⚠️ eBay API credentials not found")
+            if EBAY_APP_ID is None or EBAY_APP_ID == "":
+                st.error("EBAY_APP_ID is missing")
+            if EBAY_CERT_ID is None or EBAY_CERT_ID == "":
+                st.error("EBAY_CERT_ID is missing")
+        
+        # Debug info
+        with st.expander("Show Debug Info", expanded=False):
+            st.markdown("### Debug Information")
+            
+            # System info
+            st.markdown("#### System Info")
+            st.text(f"Session ID: {st.session_state.session_id[:8]}...")
+            st.text(f"Python: {sys.version.split(' ')[0]}")
+            
+            # Environment variables (sanitized)
+            st.markdown("#### Environment Variables")
+            st.text(f"EBAY_APP_ID: {'✓ Set' if EBAY_APP_ID else '✗ Missing'}")
+            st.text(f"EBAY_CERT_ID: {'✓ Set' if EBAY_CERT_ID else '✗ Missing'}")
+            st.text(f"EBAY_DEV_ID: {'✓ Set' if EBAY_DEV_ID else '✗ Missing'}")
+            
+            # Log display
+            st.markdown("#### Log")
+            st.text_area("Debug Log", value="\n".join(st.session_state.debug_info), height=400)
+            
+            # Clear logs button
+            if st.button("Clear Logs"):
+                st.session_state.debug_info = []
+                st.rerun()
 
 def display_items(items, title, sort_options=False, pagination=True, page_size=5):
     """Display items with modern card-based UI"""
@@ -591,18 +1037,21 @@ def display_items(items, title, sort_options=False, pagination=True, page_size=5
             </div>
             """, unsafe_allow_html=True)
     except Exception as e:
-        st.error(f"Error displaying items: {e}")
+        error_msg = f"Error displaying items: {e}"
+        log_debug(error_msg)
+        st.error(error_msg)
 
 def show_recent_searches():
     """Display recent searches with improved UI"""
     if not st.session_state.recent_searches:
         # Load saved searches if none in session state
         try:
-            if os.path.exists(SEARCHES_FILE):
-                with open(SEARCHES_FILE, "r") as f:
-                    st.session_state.recent_searches = json.load(f)
+            saved_searches = load_recent_searches()
+            if saved_searches:
+                st.session_state.recent_searches = saved_searches
+                log_debug(f"Loaded {len(saved_searches)} saved searches")
         except Exception as e:
-            st.warning(f"Could not load recent searches: {e}")
+            log_debug(f"Could not load recent searches: {e}")
             st.session_state.recent_searches = []
     
     # Only display if we have searches
@@ -645,10 +1094,13 @@ def show_recent_searches():
                     # Load button
                     if col3.button("Load", key=f"load_search_{i}"):
                         st.session_state.last_search = search
+                        log_debug(f"Loaded search: {search['query']}")
                         st.rerun()
                 
                 except Exception as e:
-                    st.warning(f"Error displaying search #{i+1}: {str(e)}")
+                    error_msg = f"Error displaying search #{i+1}: {str(e)}"
+                    log_debug(error_msg)
+                    st.warning(error_msg)
 
 def display_search_form():
     """Display search form and handle submission"""
@@ -712,6 +1164,7 @@ def display_search_form():
                     # Save to file
                     save_recent_searches()
                 
+                log_debug(f"Submitted search: {query}")
                 return True
     
     with camera_tab:
@@ -734,43 +1187,38 @@ def process_camera_photo():
         st.image(camera_input, caption="Captured Image", use_column_width=True)
         
         if st.button("Search with this Image"):
-            # Here you would implement the eBay image search API
-            # For now, we'll simulate it
-            st.info("Searching eBay with your image...")
-            
-            # In a real app, you would:
-            # 1. Upload the image to eBay's API
-            # 2. Get search results back
-            # 3. Process those results
-            
-            # Simulate a search query based on the image (in reality, this would come from eBay's API)
-            simulated_query = "vintage camera" # Pretend this is what eBay's image recognition returned
-            
-            # Create a search based on the image recognition
-            image_search = {
-                "query": simulated_query,
-                "is_upc": False,
-                "flip_type": "Thrift Flip",  # Default for image searches
-                "cost": 0.0,
-                "category": "Electronics",   # Default or detected category
-                "photo": None,  # We don't need to store the photo again
-                "timestamp": dt.datetime.now().isoformat(),
-                "image_search": True         # Flag to indicate this was an image search
-            }
-            
-            st.session_state.last_search = image_search
-            
-            # Save to recent searches
-            if image_search not in st.session_state.recent_searches:
-                st.session_state.recent_searches.insert(0, image_search)
-                if len(st.session_state.recent_searches) > MAX_RECENT_SEARCHES:
-                    st.session_state.recent_searches = st.session_state.recent_searches[:MAX_RECENT_SEARCHES]
+            # Process the image
+            with st.spinner("Analyzing image..."):
+                # In a real implementation, this would call eBay's image recognition API
+                # For now, we'll use our simulated function
+                recognition_result = process_image_search(camera_input)
                 
-                # Save to file
-                save_recent_searches()
-            
-            st.success(f"Image recognized as: {simulated_query}")
-            st.rerun()
+                # Create a search based on the image recognition
+                image_search = {
+                    "query": recognition_result["query"],
+                    "is_upc": False,
+                    "flip_type": "Thrift Flip",  # Default for image searches
+                    "cost": 0.0,
+                    "category": recognition_result["category"],
+                    "photo": None,  # We don't need to store the photo again
+                    "timestamp": dt.datetime.now().isoformat(),
+                    "image_search": True         # Flag to indicate this was an image search
+                }
+                
+                st.session_state.last_search = image_search
+                
+                # Save to recent searches
+                if image_search not in st.session_state.recent_searches:
+                    st.session_state.recent_searches.insert(0, image_search)
+                    if len(st.session_state.recent_searches) > MAX_RECENT_SEARCHES:
+                        st.session_state.recent_searches = st.session_state.recent_searches[:MAX_RECENT_SEARCHES]
+                    
+                    # Save to file
+                    save_recent_searches()
+                
+                st.success(f"Image recognized as: '{recognition_result['query']}' (Confidence: {recognition_result['confidence']:.0%})")
+                log_debug(f"Image search completed: {recognition_result['query']}")
+                st.rerun()
 
 def display_metrics(active_stats, sold_stats, fee_rate):
     """Display metrics cards with item statistics"""
@@ -873,7 +1321,9 @@ def generate_price_chart(active_items, sold_items):
         
         return fig
     except Exception as e:
-        st.error(f"Error generating price chart: {e}")
+        error_msg = f"Error generating price chart: {e}"
+        log_debug(error_msg)
+        st.error(error_msg)
         return None
 
 def generate_volume_chart(active_items, sold_items):
@@ -933,7 +1383,9 @@ def generate_volume_chart(active_items, sold_items):
         
         return fig
     except Exception as e:
-        st.error(f"Error generating volume chart: {e}")
+        error_msg = f"Error generating volume chart: {e}"
+        log_debug(error_msg)
+        st.error(error_msg)
         return None
 
 def display_profit_calculator(active_stats, sold_stats, cost, category, flip_type):
@@ -976,7 +1428,7 @@ def display_profit_calculator(active_stats, sold_stats, cost, category, flip_typ
             }
             
             fee_rate = fee_rates[platform]
-            item_title = st.text_input("Item Title (for your records)", value=st.session_state.last_search["query"])
+            item_title = st.text_input("Item Title (for your records)", value=st.session_state.last_search["query"] if st.session_state.last_search else "")
             notes = st.text_area("Notes", placeholder="Add any notes about this flip...")
         
         with col2:
@@ -1064,7 +1516,7 @@ def display_profit_calculator(active_stats, sold_stats, cost, category, flip_typ
                 # Collect data to save
                 flip_data = {
                     "title": item_title,
-                    "query": st.session_state.last_search["query"],
+                    "query": st.session_state.last_search["query"] if st.session_state.last_search else "",
                     "category": category,
                     "flip_type": flip_type,
                     "platform": platform,
@@ -1457,13 +1909,149 @@ def display_analytics(df):
                             mime="application/vnd.ms-excel"
                         )
     except Exception as e:
-        st.error(f"Error displaying analytics: {e}")
+        error_msg = f"Error displaying analytics: {e}"
+        log_debug(error_msg)
+        st.error(error_msg)
+        st.error(traceback.format_exc())
+
+def display_marketplace_comparison():
+    """Display marketplace comparison information"""
+    st.markdown("### 🛍️ Marketplace Comparison")
+    
+    # Create comparison data
+    platforms = [
+        {
+            "platform": "eBay",
+            "fee_rate": "12-15%",
+            "audience": "Global",
+            "best_for": "Electronics, Collectibles, Specialty items",
+            "payment": "Secure through platform",
+            "integration": "Full API integration available"
+        },
+        {
+            "platform": "Facebook Marketplace",
+            "fee_rate": "0% for local, 5% for shipped",
+            "audience": "Local primarily",
+            "best_for": "Furniture, Home goods, Local pickup items",
+            "payment": "Cash or peer-to-peer",
+            "integration": "No public API available"
+        },
+        {
+            "platform": "Craigslist",
+            "fee_rate": "$0-5 posting fee",
+            "audience": "Local only",
+            "best_for": "Furniture, Free items, Local services",
+            "payment": "Cash only (typically)",
+            "integration": "No public API available"
+        }
+    ]
+    
+    # Display as a table
+    st.dataframe(
+        pd.DataFrame(platforms),
+        use_container_width=True,
+        hide_index=True
+    )
+
+def display_quick_start_guide():
+    """Display quick start guide"""
+    with st.expander("📚 Quick Start Guide", expanded=False):
+        st.markdown("""
+        ### How to Use QuickFlip Pro
+        
+        1. **Search for an Item**: Enter a search term or UPC, or use Image Search to identify an item
+        2. **Analyze the Results**: Review active and sold listings to understand the market
+        3. **Calculate Profit**: Use the profit calculator to determine potential profit margins
+        4. **Track Your Flips**: Save successful flips to track your performance over time
+        5. **Make Data-Driven Decisions**: Use analytics to identify your most profitable categories and selling platforms
+        
+        ### Tips for Successful Flipping
+        
+        - **Research Thoroughly**: Always check sold prices, not just active listings
+        - **Consider All Costs**: Include shipping, fees, and your time in profit calculations
+        - **Start Small**: Begin with items you know well or have low investment requirements
+        - **Be Platform-Flexible**: Different items sell better on different marketplaces
+        """)
+
+# --- DEBUG ROUTE ---
+
+def debug_page():
+    """Display debug information page"""
+    st.title("🔍 KwikFlip Debug Page")
+    
+    st.write("### System Information")
+    st.code(f"""
+Python Version: {sys.version}
+Working Directory: {os.getcwd()}
+Data Directory: {DATA_DIR}
+Session ID: {st.session_state.session_id}
+    """)
+    
+    st.write("### Environment Variables")
+    st.code(f"""
+EBAY_APP_ID: {'✓ Set' if EBAY_APP_ID else '✗ Missing'}
+EBAY_CERT_ID: {'✓ Set' if EBAY_CERT_ID else '✗ Missing'}
+EBAY_DEV_ID: {'✓ Set' if EBAY_DEV_ID else '✗ Missing'}
+    """)
+    
+    # Test eBay connection
+    st.write("### eBay API Connection")
+    if st.button("Test eBay API Connection"):
+        with st.spinner("Testing connection..."):
+            success, message = test_ebay_connection()
+            if success:
+                st.success(f"✅ Connection successful: {message}")
+            else:
+                st.error(f"❌ Connection failed: {message}")
+    
+    # Session state explorer
+    st.write("### Session State")
+    with st.expander("Session State Explorer", expanded=False):
+        session_dict = {k: v for k, v in st.session_state.items() if k not in ["debug_info"]}
+        st.json(session_dict)
+    
+    # Debug log
+    st.write("### Debug Log")
+    st.code("\n".join(st.session_state.debug_info))
+    
+    # Data files
+    st.write("### Data Files")
+    if os.path.exists(FLIPS_FILE):
+        st.write(f"Flips file exists: {FLIPS_FILE}")
+        df = load_flips()
+        st.write(f"Contains {len(df)} flips")
+    else:
+        st.write(f"Flips file does not exist: {FLIPS_FILE}")
+    
+    if os.path.exists(SEARCHES_FILE):
+        st.write(f"Searches file exists: {SEARCHES_FILE}")
+        try:
+            with open(SEARCHES_FILE, "r") as f:
+                searches = json.load(f)
+            st.write(f"Contains {len(searches)} saved searches")
+        except Exception as e:
+            st.write(f"Error reading searches file: {e}")
+    else:
+        st.write(f"Searches file does not exist: {SEARCHES_FILE}")
 
 # --- MAIN APPLICATION FUNCTION ---
 
 def main():
     """Main application function"""
     try:
+        # Show debug page if query parameter is present
+        params = st.query_params          # QueryParams proxy object
+        if params.get("debug") is not None:   # works for ?debug or ?debug=1
+            debug_page()
+            return
+
+        # 1) Display header and sidebar  
+        display_header()
+        display_sidebar()
+        ...
+                
+
+            
         # 1) Display header and sidebar  
         display_header()
         display_sidebar()
@@ -1479,61 +2067,10 @@ def main():
             st.info("🔍 Enter a search above to begin.")
             
             # Display platform comparison
-            st.markdown("### 🛍️ Marketplace Comparison")
-            
-            # Create comparison data
-            platforms = [
-                {
-                    "platform": "eBay",
-                    "fee_rate": "12-15%",
-                    "audience": "Global",
-                    "best_for": "Electronics, Collectibles, Specialty items",
-                    "payment": "Secure through platform",
-                    "integration": "Full API integration available"
-                },
-                {
-                    "platform": "Facebook Marketplace",
-                    "fee_rate": "0% for local, 5% for shipped",
-                    "audience": "Local primarily",
-                    "best_for": "Furniture, Home goods, Local pickup items",
-                    "payment": "Cash or peer-to-peer",
-                    "integration": "No public API available"
-                },
-                {
-                    "platform": "Craigslist",
-                    "fee_rate": "$0-5 posting fee",
-                    "audience": "Local only",
-                    "best_for": "Furniture, Free items, Local services",
-                    "payment": "Cash only (typically)",
-                    "integration": "No public API available"
-                }
-            ]
-            
-            # Display as a table
-            st.dataframe(
-                pd.DataFrame(platforms),
-                use_container_width=True,
-                hide_index=True
-            )
+            display_marketplace_comparison()
             
             # Display quickstart guide
-            with st.expander("📚 Quick Start Guide"):
-                st.markdown("""
-                ### How to Use QuickFlip Pro
-                
-                1. **Search for an Item**: Enter a search term or UPC, or use Image Search to identify an item
-                2. **Analyze the Results**: Review active and sold listings to understand the market
-                3. **Calculate Profit**: Use the profit calculator to determine potential profit margins
-                4. **Track Your Flips**: Save successful flips to track your performance over time
-                5. **Make Data-Driven Decisions**: Use analytics to identify your most profitable categories and selling platforms
-                
-                ### Tips for Successful Flipping
-                
-                - **Research Thoroughly**: Always check sold prices, not just active listings
-                - **Consider All Costs**: Include shipping, fees, and your time in profit calculations
-                - **Start Small**: Begin with items you know well or have low investment requirements
-                - **Be Platform-Flexible**: Different items sell better on different marketplaces
-                """)
+            display_quick_start_guide()
             
             return
 
@@ -1583,7 +2120,7 @@ def main():
         if volume_fig:
             st.plotly_chart(volume_fig, use_container_width=True)
 
-        # 10) Display item listings - simplified for MVP to just eBay results
+        # 10) Display item listings
         st.markdown("### eBay Results")
         display_items(active_items, "Active eBay Listings", sort_options=True, pagination=True, page_size=10)
         display_items(sold_items, "Sold eBay Items (30d)", sort_options=True, pagination=True, page_size=10)
@@ -1604,10 +2141,15 @@ def main():
         </div>
         """, unsafe_allow_html=True)
     except Exception as e:
-        st.error(f"An error occurred in the main function: {e}")
+        error_msg = f"An error occurred in the main function: {e}"
+        log_debug(error_msg)
+        log_debug(traceback.format_exc())
+        st.error(error_msg)
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
         st.error(f"Application error: {e}")
+        st.error(traceback.format_exc())
+
