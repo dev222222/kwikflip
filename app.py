@@ -2043,13 +2043,7 @@ def main():
         params = st.query_params          # QueryParams proxy object
         if params.get("debug") is not None:   # works for ?debug or ?debug=1
             debug_page()
-            return
-
-        # 1) Display header and sidebar  
-        display_header()
-        display_sidebar()
-        ...
-                
+            return        
 
             
         # 1) Display header and sidebar  
