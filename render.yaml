@@ -13,3 +13,9 @@ services:
         value: ${PORT}
       - key: STREAMLIT_SERVER_ADDRESS
         value: 0.0.0.0
+      - key: EBAY_APP_ID
+        value: "ChrisNeu-KwickFli-PRD-4476d6672-3d735724"
+      - key: EBAY_CERT_ID
+        value: "PRD-476d6672b383-aff6-493f-8e86-8d8f"
+      - key: EBAY_DEV_ID
+        value: "66568d71-5a17-44f1-bc26-48524000f823"
