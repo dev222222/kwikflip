@@ -53,6 +53,19 @@ def log_debug(message):
     # Also print to standard output for server logs
     print(formatted_message)
 
+# --- EBAY CREDENTIALS CHECK FUNCTION ---
+def check_ebay_credentials():
+    """Check if eBay credentials are available and valid"""
+    has_app_id = EBAY_APP_ID is not None and EBAY_APP_ID != ""
+    has_cert_id = EBAY_CERT_ID is not None and EBAY_CERT_ID != ""
+    log_debug(f"EBAY_APP_ID exists: {has_app_id}")
+    log_debug(f"EBAY_CERT_ID exists: {has_cert_id}")
+    if has_app_id and has_cert_id:
+        log_debug("eBay credentials verification: PASS")
+    else:
+        log_debug("eBay credentials verification: FAIL")
+    return has_app_id and has_cert_id
+
 # Set Streamlit page config
 st.set_page_config(
     page_title="KwikFlip - eBay Research Tool",
