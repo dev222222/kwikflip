@@ -359,7 +359,7 @@ def get_ebay_oauth_token():
         # These scopes are required for the Browse API and Marketplace Insights API
         payload = {
             "grant_type": "client_credentials",
-            "scope": "https://api.ebay.com/oauth/api_scope https://api.ebay.com/oauth/api_scope/buy.item.feed https://api.ebay.com/oauth/api_scope/buy.marketing https://api.ebay.com/oauth/api_scope/buy.product.feed https://api.ebay.com/oauth/api_scope/buy.marketplace.insights"
+            "scope": "https://api.ebay.com/oauth/api_scope https://api.ebay.com/oauth/api_scope/buy.browse https://api.ebay.com/oauth/api_scope/buy.marketplace.insights"
         }
         
         # Make the request
