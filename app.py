@@ -48,555 +48,137 @@ print(f"EBAY_APP_ID exists: {EBAY_APP_ID is not None and EBAY_APP_ID != ''}")
 print(f"EBAY_CERT_ID exists: {EBAY_CERT_ID is not None and EBAY_CERT_ID != ''}")
 print(f"EBAY_DEV_ID exists: {EBAY_DEV_ID is not None and EBAY_DEV_ID != ''}")
 
-# eBay API endpoints - Browse API requires OAuth
-EBAY_OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
-EBAY_BROWSE_API_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
-EBAY_SOLD_API_URL = "https://api.ebay.com/buy/marketplace-insights/v1_beta/item_sales/search"
+# eBay API endpoints - Using traditional API with Auth'n'Auth
+EBAY_FINDING_API_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
+EBAY_TRADING_API_URL = "https://api.ebay.com/ws/api.dll"
 
-# Create data directory if it doesn't exist
-DATA_DIR.mkdir(exist_ok=True)
+def get_ebay_auth_token():
+    """Get static Auth'n'Auth token"""
+    # Use the static token from the eBay developer portal
+    token = "v^1.1#f^1#r^1#f^0#i^3#p^3#f^UI4xMF8xMTo4MjAyNzk4RkY2NjY3QTBGRUJDMjAxMEQzMUU5MDc1NF8xXzEjRV4yNjA="  # Replace with your actual token
+    log_debug("Using Auth'n'Auth token")
+    return token, None
 
-# Default theme colors
-THEME = {
-    "primary": "#1e88e5",       # Blue
-    "primary_dark": "#1565c0",  # Darker blue
-    "secondary": "#7cd6ef",     # Light blue
-    "accent": "#ff8a65",        # Coral 
-    "bg": "#ffffff",            # White
-    "text": "#212121",          # Dark grey
-    "light_text": "#757575",    # Medium grey
-    "success": "#4caf50",       # Green
-    "warning": "#ffc107",       # Yellow
-    "danger": "#f44336",        # Red
-    "card_bg": "#f9f9f9",       # Light grey
-    "card_border": "#e0e0e0"    # Grey
-}
-
-# Custom styles
-st.markdown(f"""
-<style>
-    /* Base styles */
-    body {{
-        font-family: 'Inter', sans-serif;
-        color: {THEME["text"]};
-        background-color: {THEME["bg"]};
-    }}
-    
-    /* Header */
-    .main-header {{
-        text-align: center;
-        margin-bottom: 2rem;
-        padding: 2rem 0;
-        background: linear-gradient(135deg, {THEME["primary"]}, {THEME["secondary"]});
-        color: white;
-        border-radius: 10px;
-    }}
-    .main-header h1 {{
-        font-weight: 700;
-        margin-bottom: 0.5rem;
-        letter-spacing: -0.05em;
-    }}
-    .main-header p {{
-        opacity: 0.9;
-        font-weight: 400;
-    }}
-    
-    /* Cards */
-    .card {{
-        background-color: {THEME["bg"]};
-        border-radius: 10px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        border: 1px solid {THEME["card_border"]};
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-    }}
-    .card:hover {{
-        transform: translateY(-2px);
-        box-shadow: 0 6px 12px rgba(0,0,0,0.08);
-    }}
-    
-    /* Metric cards */
-    .metric-card {{
-        background-color: {THEME["bg"]};
-        border-radius: 10px;
-        padding: 1.5rem;
-        margin: 0.7rem 0;
-        border-left: 4px solid {THEME["primary"]};
-        box-shadow: 0 2px 4px rgba(0,0,0,0.04);
-    }}
-    .metric-value {{
-        font-size: 1.8rem;
-        font-weight: 700;
-        color: {THEME["primary"]};
-        margin: 0.5rem 0;
-    }}
-    .metric-label {{
-        font-size: 0.9rem;
-        color: {THEME["light_text"]};
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }}
-    
-    /* Profit card */
-    .profit-card {{
-        background-color: rgba(76, 175, 80, 0.1);
-        border-radius: 10px;
-        padding: 1.5rem;
-        margin: 0.7rem 0;
-        border-left: 4px solid {THEME["success"]};
-    }}
-    
-    /* Loss card */
-    .loss-card {{
-        background-color: rgba(244, 67, 54, 0.1);
-        border-radius: 10px;
-        padding: 1.5rem;
-        margin: 0.7rem 0;
-        border-left: 4px solid {THEME["danger"]};
-    }}
-    
-    /* Item cards */
-    .item-card {{
-        display: flex;
-        border: 1px solid {THEME["card_border"]};
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 0.7rem 0;
-        background-color: {THEME["bg"]};
-        box-shadow: 0 2px 4px rgba(0,0,0,0.03);
-        transition: transform 0.15s ease, box-shadow 0.15s ease;
-    }}
-    .item-card:hover {{
-        transform: translateY(-2px);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.08);
-    }}
-    .item-image {{
-        width: 120px;
-        height: 120px;
-        object-fit: contain;
-        border-radius: 4px;
-    }}
-    .item-details {{
-        flex: 1;
-        padding: 0 1rem;
-    }}
-    .item-title {{
-        font-weight: 600;
-        margin-bottom: 0.5rem;
-        color: {THEME["text"]};
-    }}
-    .item-meta {{
-        font-size: 0.9rem;
-        color: {THEME["light_text"]};
-    }}
-    .item-price {{
-        font-size: 1.4rem;
-        font-weight: 700;
-        color: {THEME["primary"]};
-        white-space: nowrap;
-    }}
-    .item-shipping {{
-        font-size: 0.8rem;
-        color: {THEME["light_text"]};
-    }}
-    
-    /* Search form */
-    .search-form {{
-        background-color: {THEME["card_bg"]};
-        padding: 1.5rem;
-        border-radius: 10px;
-        margin-bottom: 1.5rem;
-        border: 1px solid {THEME["card_border"]};
-    }}
-    
-    /* Buttons */
-    .stButton>button {{
-        background-color: {THEME["primary"]};
-        color: white;
-        border: none;
-        border-radius: 6px;
-        padding: 0.5rem 1rem;
-        font-weight: 500;
-        transition: background-color 0.2s ease;
-    }}
-    .stButton>button:hover {{
-        background-color: {THEME["primary_dark"]};
-    }}
-    
-    /* Camera button */
-    .camera-button {{
-        background-color: {THEME["accent"]};
-        color: white;
-        border: none;
-        border-radius: 6px;
-        padding: 0.5rem 1rem;
-        font-weight: 500;
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-    }}
-    .camera-button:hover {{
-        background-color: #f4511e;
-    }}
-    
-    /* Footer */
-    .footer {{
-        text-align: center;
-        margin-top: 3rem;
-        padding: 1.5rem 0;
-        font-size: 0.9rem;
-        color: {THEME["light_text"]};
-        border-top: 1px solid {THEME["card_border"]};
-    }}
-    
-    /* Mobile optimizations */
-    @media (max-width: 768px) {{
-        .item-card {{
-            flex-direction: column;
-        }}
-        .item-image {{
-            width: 100%;
-            height: auto;
-            margin-bottom: 1rem;
-        }}
-    }}
-</style>
-""", unsafe_allow_html=True)
-
-# Session state initialization
-if "filter_settings" not in st.session_state:
-    st.session_state.filter_settings = {
-        "min_price": 0,
-        "max_price": 10000,
-        "condition": "any",
-        "days_sold": 30,
-        "exclude_words": "",
-    }
-
-if "last_search" not in st.session_state:
-    st.session_state.last_search = None
-
-if "active_items" not in st.session_state:
-    st.session_state.active_items = []
-
-if "sold_items" not in st.session_state:
-    st.session_state.sold_items = []
-
-if "recent_searches" not in st.session_state:
-    st.session_state.recent_searches = []
-
-if "camera_photo" not in st.session_state:
-    st.session_state.camera_photo = None
-
-if "debug_info" not in st.session_state:
-    st.session_state.debug_info = []
-
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
-
-# OAuth token storage
-if "ebay_oauth_token" not in st.session_state:
-    st.session_state.ebay_oauth_token = None
-
-if "ebay_token_expiry" not in st.session_state:
-    st.session_state.ebay_token_expiry = 0
-
-# --- EBAY API FUNCTIONS ---
-
-def check_ebay_credentials():
-    """Check if eBay credentials are available and valid"""
-    has_app_id = EBAY_APP_ID is not None and EBAY_APP_ID != ""
-    has_cert_id = EBAY_CERT_ID is not None and EBAY_CERT_ID != ""
-    
-    # Add to debug info
-    log_debug(f"EBAY_APP_ID exists: {has_app_id}")
-    log_debug(f"EBAY_CERT_ID exists: {has_cert_id}")
-    
-    if has_app_id and has_cert_id:
-        log_debug("eBay credentials verification: PASS")
-    else:
-        log_debug("eBay credentials verification: FAIL")
-    
-    return has_app_id and has_cert_id
-
-def log_debug(message):
-    """Add message to debug log and print to console"""
-    timestamp = dt.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    formatted_message = f"[{timestamp}] {message}"
-    
-    # Add to session state debug info
-    if len(st.session_state.debug_info) > 100:
-        st.session_state.debug_info = st.session_state.debug_info[-100:]
-    st.session_state.debug_info.append(formatted_message)
-    
-    # Also print to standard output for server logs
-    print(formatted_message)
-
-def get_ebay_oauth_token():
-    """Get OAuth 2.0 token from eBay"""
+def search_ebay_traditional(query, sold=False, filters=None, limit=30):
+    """Search for items using eBay traditional API with Auth'n'Auth"""
     try:
-        log_debug("Requesting OAuth token from eBay")
+        log_debug(f"Searching eBay with Auth'n'Auth for '{query}' (sold={sold})")
         
-        if not EBAY_APP_ID or not EBAY_CERT_ID:
-            log_debug("Missing eBay credentials for OAuth")
-            return None, "Missing eBay credentials"
+        # Get Auth token
+        token = get_ebay_auth_token()[0]
         
-        # Endpoint for OAuth token
-        oauth_endpoint = EBAY_OAUTH_URL
-        
-        # Create the authorization string (Basic Auth with client ID:secret)
-        auth_string = f"{EBAY_APP_ID}:{EBAY_CERT_ID}"
-        encoded_auth = base64.b64encode(auth_string.encode('utf-8')).decode('utf-8')
-        
-        # Headers for the request
+        # Set up the request
         headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Authorization": f"Basic {encoded_auth}"
+            "X-EBAY-API-IAF-TOKEN": token,
+            "X-EBAY-API-SITE-ID": "0",  # US site
+            "X-EBAY-API-CALL-NAME": "findItemsByKeywords" if not sold else "findCompletedItems",
+            "X-EBAY-API-VERSION": "1.13.0",
+            "Content-Type": "application/xml"
         }
         
-        # Request body for client credentials grant type
-        # These scopes are required for the Browse API and Marketplace Insights API
-        payload = {
-            "grant_type": "client_credentials",
-            "scope": "https://api.ebay.com/oauth/api_scope https://api.ebay.com/oauth/api_scope/buy.browse https://api.ebay.com/oauth/api_scope/buy.marketplace.insights"
-        }
+        # Build the XML request
+        xml_request = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <findItemsByKeywordsRequest xmlns="http://www.ebay.com/marketplace/search/v1/services">
+            <keywords>{query}</keywords>
+            <paginationInput>
+                <entriesPerPage>{limit}</entriesPerPage>
+                <pageNumber>1</pageNumber>
+            </paginationInput>
+            <sortOrder>BestMatch</sortOrder>
+        </findItemsByKeywordsRequest>"""
         
         # Make the request
-        response = requests.post(oauth_endpoint, headers=headers, data=payload, timeout=API_TIMEOUT)
+        response = requests.post(EBAY_FINDING_API_URL, headers=headers, data=xml_request, timeout=API_TIMEOUT)
         
-        if response.status_code == 200:
-            token_data = response.json()
-            log_debug("Successfully retrieved OAuth token")
-            
-            # Store token in session state with expiration
-            st.session_state.ebay_oauth_token = token_data["access_token"]
-            st.session_state.ebay_token_expiry = time.time() + token_data["expires_in"] - 300  # 5 min buffer
-            
-            return token_data["access_token"], None
-        else:
-            error_msg = f"Failed to get OAuth token: HTTP {response.status_code}"
+        if response.status_code != 200:
+            error_msg = f"eBay API returned status code {response.status_code}"
             log_debug(f"{error_msg}: {response.text[:500]}")
             return None, error_msg
-    
+        
+        # Parse the XML response
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(response.content)
+            
+            # Extract items
+            items = []
+            for item in root.findall(".//{http://www.ebay.com/marketplace/search/v1/services}item"):
+                try:
+                    item_data = {
+                        "id": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}itemId").text,
+                        "title": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}title").text,
+                        "url": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}viewItemURL").text,
+                        "image": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}galleryURL").text,
+                        "price": float(item.find(".//{http://www.ebay.com/marketplace/search/v1/services}currentPrice").text),
+                        "shipping": float(item.find(".//{http://www.ebay.com/marketplace/search/v1/services}shippingServiceCost").text),
+                        "end_time": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}endTime").text,
+                        "condition": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}condition").find(".//{http://www.ebay.com/marketplace/search/v1/services}conditionDisplayName").text,
+                        "watchers": int(item.find(".//{http://www.ebay.com/marketplace/search/v1/services}watchCount").text) if item.find(".//{http://www.ebay.com/marketplace/search/v1/services}watchCount") is not None else 0,
+                        "sold": sold
+                    }
+                    items.append(item_data)
+                except Exception as e:
+                    log_debug(f"Error processing item: {e}")
+                    continue
+            
+            return items, None
+            
+        except Exception as e:
+            error_msg = f"Error parsing eBay API response: {e}"
+            log_debug(error_msg)
+            return None, error_msg
+            
     except Exception as e:
-        error_msg = f"Error getting OAuth token: {str(e)}"
+        error_msg = f"Error calling eBay API: {e}"
         log_debug(error_msg)
         log_debug(traceback.format_exc())
         return None, error_msg
 
-def ensure_oauth_token():
-    """Make sure we have a valid OAuth token, refresh if needed"""
-    # Check if we have a token and it's not expired
-    if (st.session_state.ebay_oauth_token and 
-        time.time() < st.session_state.ebay_token_expiry):
-        log_debug("Using existing OAuth token")
-        return st.session_state.ebay_oauth_token, None
-    
-    # Get a new token
-    log_debug("OAuth token missing or expired, requesting new one")
-    return get_ebay_oauth_token()
-
-def test_ebay_connection():
-    """Test eBay API connection and return status"""
-    if not check_ebay_credentials():
-        return False, "Missing eBay API credentials"
-    
+def fetch_items(query, sold=False, filters=None, limit=30):
+    """Fetch items from eBay API or generate mock data"""
     try:
-        # Test OAuth token acquisition first
-        token, error = get_ebay_oauth_token()
-        if not token:
-            return False, f"OAuth authentication failed: {error}"
+        # Log start of fetch operation
+        log_debug(f"Fetching {'sold' if sold else 'active'} items for query: '{query}'")
         
-        # Test a simple Browse API request
-        api_endpoint = EBAY_BROWSE_API_URL
+        # Check if eBay credentials are available
+        has_credentials = check_ebay_credentials()
         
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"
-        }
-        
-        params = {
-            "q": "test",
-            "limit": 1
-        }
-        
-        log_debug("Testing eBay Browse API connection...")
-        response = requests.get(api_endpoint, headers=headers, params=params, timeout=API_TIMEOUT)
-        
-        if response.status_code == 200:
-            log_debug(f"eBay Browse API connection test: SUCCESS (Status: {response.status_code})")
-            return True, "Connection successful"
-        else:
-            log_debug(f"eBay Browse API connection test: FAILED (Status: {response.status_code})")
-            log_debug(f"Response: {response.text[:500]}")
-            return False, f"eBay Browse API returned status code {response.status_code}"
-    
-    except Exception as e:
-        error_message = f"eBay Browse API connection test: ERROR ({str(e)})"
-        log_debug(error_message)
-        log_debug(traceback.format_exc())
-        return False, error_message
-
-def search_ebay_browse(query, sold=False, filters=None, limit=30):
-    """Search for items using eBay Browse API"""
-    try:
-        log_debug(f"Searching eBay Browse API for '{query}' (sold={sold})")
-        
-        # Get OAuth token - Browse API requires OAuth 2.0 authentication
-        token, error = ensure_oauth_token()
-        if not token:
-            return None, f"Failed to authenticate with eBay: {error}"
-        
-        # Endpoint URLs - different for active vs sold items
-        if sold:
-            # For sold items we need to use the Marketplace Insights API
-            api_endpoint = EBAY_SOLD_API_URL
-            log_debug(f"Using Marketplace Insights API for sold items")
-        else:
-            # For active items we use the Browse API
-            api_endpoint = EBAY_BROWSE_API_URL
-            log_debug(f"Using Browse API for active items")
-        
-        # Headers for the request
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"
-        }
-        
-        # Base parameters
-        params = {
-            "q": query,
-            "limit": min(limit, 200)  # API max is 200
-        }
-        
-        # Add filters based on provided parameters
-        filter_array = []
-        
-        if filters:
-            # Price filters
-            if filters.get('min_price') is not None and filters.get('min_price') > 0:
-                if filters.get('max_price') is not None:
-                    filter_array.append(f"price:[{filters['min_price']}..{filters['max_price']}]")
-                else:
-                    filter_array.append(f"price:[{filters['min_price']}..)")
-            elif filters.get('max_price') is not None:
-                filter_array.append(f"price:[..{filters['max_price']}]")
-            
-            # Condition filters - convert to Browse API format
-            if filters.get('condition') and filters['condition'] != 'any':
-                condition_map = {
-                    'new': 'NEW',
-                    'used': 'USED',
-                    'for parts or not working': 'FOR_PARTS_OR_NOT_WORKING'
-                }
-                cond = condition_map.get(filters['condition'])
-                if cond:
-                    filter_array.append(f"conditions:{{{cond}}}")
-        
-        # Join all filters with comma
-        if filter_array:
-            params["filter"] = ",".join(filter_array)
-        
-        log_debug(f"Making eBay Browse API request to: {api_endpoint}")
-        log_debug(f"Browse API params: {params}")
-        
-        # Make the request
-        response = requests.get(api_endpoint, headers=headers, params=params, timeout=API_TIMEOUT)
-        
-        # Log response status
-        log_debug(f"eBay Browse API response status: {response.status_code}")
-        
-        if response.status_code != 200:
-            error_msg = f"eBay Browse API returned status code {response.status_code}"
-            log_debug(error_msg)
-            
-            # Try to get more info from the response
+        if has_credentials:
+            log_debug("Attempting to use eBay traditional API")
             try:
-                error_details = response.text[:500]  # Get first 500 chars
-                log_debug(f"Response content: {error_details}")
-            except:
-                pass
+                # Attempt to use the eBay traditional API
+                items, error = search_ebay_traditional(query, sold, filters, limit)
                 
-            return None, error_msg
-        
-        # Parse the response
-        data = response.json()
-        
-        # The structure is different between active and sold APIs
-        if sold:
-            # For sold items (Marketplace Insights API)
-            items_list = data.get("itemSales", [])
-            total_items = data.get("total", 0)
-        else:
-            # For active items (Browse API)
-            items_list = data.get("itemSummaries", [])
-            total_items = data.get("total", 0)
-        
-        log_debug(f"Found {len(items_list)} items in Browse API response (total available: {total_items})")
-        
-        if not items_list:
-            return [], "No items found matching your search criteria"
-        
-        # Convert to our standard format
-        items = []
-        for item in items_list:
-            try:
-                # Extract common data first
-                item_id = item.get("itemId", "")
-                title = item.get("title", "Untitled Item")
-                
-                # Then handle differences between active and sold items
-                if sold:
-                    # For sold items
-                    url = f"https://www.ebay.com/itm/{item_id}" # Construct URL
-                    image_url = item.get("image", {}).get("imageUrl", "https://via.placeholder.com/150")
-                    price = float(item.get("lastSoldPrice", {}).get("value", 0))
-                    shipping = float(item.get("shippingCost", {}).get("value", 0)) if item.get("shippingCost") else 0.0
-                    end_time = item.get("lastSoldDate", dt.datetime.now().isoformat())
-                    condition = item.get("condition", "Not Specified")
-                    watchers = 0  # Not available for sold items
+                if items is not None:
+                    log_debug(f"Successfully retrieved {len(items)} items from eBay API")
+                    return items, None
                 else:
-                    # For active items
-                    url = item.get("itemWebUrl", f"https://www.ebay.com/itm/{item_id}")
-                    image_url = item.get("image", {}).get("imageUrl", "https://via.placeholder.com/150")
-                    price = float(item.get("price", {}).get("value", 0))
-                    shipping = float(item.get("shippingOptions", [{}])[0].get("shippingCost", {}).get("value", 0)) if item.get("shippingOptions") else 0.0
-                    end_time = item.get("itemEndDate", dt.datetime.now().isoformat())
-                    condition = item.get("condition", "Not Specified")
-                    watchers = item.get("watchCount", 0)
-                
-                # Build item dictionary in our standard format
-                item_data = {
-                    "id": item_id,
-                    "title": title,
-                    "url": url,
-                    "image": image_url,
-                    "price": price,
-                    "shipping": shipping,
-                    "end_time": end_time,
-                    "watchers": watchers,
-                    "condition": condition,
-                    "sold": sold
-                }
-                
-                items.append(item_data)
-                
+                    error_msg = f"eBay API error: {error}. Falling back to mock data."
+                    log_debug(error_msg)
+                    st.warning(error_msg)
+                    # Fall through to mock data
             except Exception as e:
-                error_msg = f"Error processing Browse API item: {e}"
+                error_msg = f"Error with eBay API: {e}. Falling back to mock data."
                 log_debug(error_msg)
-                log_debug(traceback.format_exc())
-                # Continue processing other items
+                
+                # Get full traceback
+                tb = traceback.format_exc()
+                log_debug(f"Traceback: {tb}")
+                
+                st.warning(error_msg)
+                # Fall through to mock data
+        else:
+            log_debug("eBay credentials not found or invalid")
+            st.info("Using mock data for demonstration. eBay API integration is being configured.")
         
-        return items, None
+        # Generate mock items as fallback
+        mock_items = generate_mock_items(count=limit, sold=sold)
+        return mock_items, None
         
     except Exception as e:
-        error_msg = f"Error calling eBay Browse API: {e}"
+        error_msg = f"Error in fetch_items: {e}"
         log_debug(error_msg)
         log_debug(traceback.format_exc())
-        
         return None, error_msg
 
 def process_image_search(image_data):
@@ -739,78 +321,6 @@ def save_recent_searches():
         log_debug(error_msg)
         st.error(error_msg)
         return False
-
-def fetch_items(query, sold=False, filters=None, limit=30):
-    """Fetch items from eBay API or generate mock data"""
-    try:
-        # Log start of fetch operation
-        log_debug(f"Fetching {'sold' if sold else 'active'} items for query: '{query}'")
-        
-        # Check if eBay credentials are available
-        has_credentials = check_ebay_credentials()
-        
-        if has_credentials:
-            log_debug("Attempting to use eBay Browse API")
-            try:
-                # Attempt to use the eBay Browse API
-                items, error = search_ebay_browse(query, sold, filters, limit)
-                
-                if items is not None:
-                    log_debug(f"Successfully retrieved {len(items)} items from eBay Browse API")
-                    return items, None
-                else:
-                    error_msg = f"eBay Browse API error: {error}. Falling back to mock data."
-                    log_debug(error_msg)
-                    st.warning(error_msg)
-                    # Fall through to mock data
-            except Exception as e:
-                error_msg = f"Error with eBay Browse API: {e}. Falling back to mock data."
-                log_debug(error_msg)
-                
-                # Get full traceback
-                tb = traceback.format_exc()
-                log_debug(f"Traceback: {tb}")
-                
-                st.warning(error_msg)
-                # Fall through to mock data
-        else:
-            log_debug("eBay credentials not found or invalid")
-            st.info("Using mock data for demonstration. eBay API integration is being configured.")
-        
-        # Generate mock items as fallback
-        mock_items = []
-        try:
-            log_debug("Generating mock data as fallback")
-            mock_items = generate_mock_items(count=limit, sold=sold)
-            log_debug(f"Generated {len(mock_items)} mock items")
-        except Exception as e:
-            error_msg = f"Error generating mock items: {e}"
-            log_debug(error_msg)
-            st.error(error_msg)
-            
-            # Provide basic fallback items
-            for i in range(3):
-                mock_items.append({
-                    "id": f"fallback-{i}",
-                    "title": f"Sample Item {i+1}",
-                    "url": "https://www.ebay.com",
-                    "image": "https://via.placeholder.com/150",
-                    "price": 29.99,
-                    "shipping": 4.99,
-                    "end_time": dt.datetime.now().isoformat(),
-                    "watchers": 5,
-                    "condition": "Used",
-                    "sold": sold
-                })
-        
-        return mock_items, None
-    except Exception as e:
-        error_msg = f"Error in fetch_items: {e}"
-        log_debug(error_msg)
-        log_debug(traceback.format_exc())
-        
-        st.error(error_msg)
-        return [], None
 
 def load_flips():
     """Load saved flips from CSV file"""
