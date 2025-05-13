@@ -17,6 +17,42 @@ import uuid
 import sys
 import base64
 
+# --- SESSION STATE INITIALIZATION ---
+if "filter_settings" not in st.session_state:
+    st.session_state.filter_settings = {
+        "min_price": 0,
+        "max_price": 10000,
+        "condition": "any",
+        "days_sold": 30,
+        "exclude_words": "",
+    }
+if "last_search" not in st.session_state:
+    st.session_state.last_search = None
+if "active_items" not in st.session_state:
+    st.session_state.active_items = []
+if "sold_items" not in st.session_state:
+    st.session_state.sold_items = []
+if "recent_searches" not in st.session_state:
+    st.session_state.recent_searches = []
+if "camera_photo" not in st.session_state:
+    st.session_state.camera_photo = None
+if "debug_info" not in st.session_state:
+    st.session_state.debug_info = []
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
+# --- LOGGING FUNCTION ---
+def log_debug(message):
+    """Add message to debug log and print to console"""
+    timestamp = dt.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    formatted_message = f"[{timestamp}] {message}"
+    # Add to session state debug info
+    if len(st.session_state.debug_info) > 100:
+        st.session_state.debug_info = st.session_state.debug_info[-100:]
+    st.session_state.debug_info.append(formatted_message)
+    # Also print to standard output for server logs
+    print(formatted_message)
+
 # Set Streamlit page config
 st.set_page_config(
     page_title="KwikFlip - eBay Research Tool",
