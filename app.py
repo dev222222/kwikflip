@@ -2130,7 +2130,7 @@ def main():
         
         # Show marketplace information if no search
         if not did_search and not st.session_state.last_search:
-            st.info("🔍 Enter a search above to begin
+            st.info("🔍 Enter a search above to begin")
             
             # Display platform comparison
             display_marketplace_comparison()
