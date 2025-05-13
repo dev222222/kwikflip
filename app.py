@@ -38,7 +38,7 @@ DATA_DIR = Path("data")
 FLIPS_FILE = DATA_DIR / "flips.csv"
 SEARCHES_FILE = DATA_DIR / "searches.json"
 MAX_RECENT_SEARCHES = 10
-API_TIMEOUT = (25,40)  # (connect, read)
+API_TIMEOUT = 15  # Reduced timeout for API calls
 
 # Debug - Print environment variables to logs (not visible to users)
 print(f"Python version: {sys.version}")
@@ -2040,11 +2040,134 @@ def main():
     """Main application function"""
     try:
         # Show debug page if query parameter is present
-        params = st.query_params          # QueryParams proxy object
-        if params.get("debug") is not None:   # works for ?debug or ?debug=1
+        params = st.query_params  # QueryParams proxy object
+        if params.get("debug") is not None:  # works for ?debug or ?debug=1
             debug_page()
-            return        
+            return
+            
+        # 1) Display header and sidebar  
+        display_header()
+        display_sidebar()
+        
+        # 2) Show recent searches
+        show_recent_searches()
+        
+        # 3) Show the search form  
+        did_search = display_search_form()
+        
+        # Show marketplace information if no search
+        if not did_search and not st.session_state.last_search:
+            st.info("🔍 Enter a search above to begin.")
+            
+            # Display platform comparison
+            display_marketplace_comparison()
+            
+            # Display quickstart guide
+            display_quick_start_guide()
+            
+            return
 
+        # 4) Get search parameters from session state
+        search = st.session_state.last_search
+        query     = search["query"]
+        is_upc    = search.get("is_upc", False)
+        flip_type = search.get("flip_type", "Retail Arbitrage")
+        cost      = search.get("cost", 0.0)
+        category  = search.get("category", "Electronics")
+        filters   = st.session_state.filter_settings
+        
+        # Check if this was an image search
+        is_image_search = search.get("image_search", False)
+        if is_image_search:
+            st.info(f"📸 Image Search: Recognized as '{query}'")
+
+        # 5) Fetch data  
+        with st.spinner("Fetching data..."):
+            active_items, active_error = fetch_items(query, sold=False, filters=filters)
+            sold_items, sold_error = fetch_items(query, sold=True, filters=filters)
+            
+            # Store items in session state
+            st.session_state.active_items = active_items
+            st.session_state.sold_items = sold_items
+            
+            # Show any errors
+            if active_error:
+                st.warning(f"Notice for active items: {active_error}")
+            if sold_error:
+                st.warning(f"Notice for sold items: {sold_error}")
+
+        # 6) Compute statistics  
+        active_stats = calculate_stats(active_items)
+        sold_stats   = calculate_stats(sold_items)
+
+        # 7) Display metrics and charts  
+        display_metrics(active_stats, sold_stats, get_fee_rate(category))
+        
+        # 8) Show price distribution chart
+        price_fig = generate_price_chart(active_items, sold_items)
+        if price_fig:
+            st.plotly_chart(price_fig, use_container_width=True)
+
+        # 9) Show volume chart for sold items
+        volume_fig = generate_volume_chart(active_items, sold_items)
+        if volume_fig:
+            st.plotly_chart(volume_fig, use_container_width=True)
+
+        # 10) Display item listings
+        st.markdown("### eBay Results")
+        display_items(active_items, "Active eBay Listings", sort_options=True, pagination=True, page_size=10)
+        display_items(sold_items, "Sold eBay Items (30d)", sort_options=True, pagination=True, page_size=10)
+
+        # 11) Show profit calculator  
+        display_profit_calculator(active_stats, sold_stats, cost, category, flip_type)
+
+        # 12) Display analytics on saved flips  
+        df = load_flips()
+        if not df.empty:
+            display_analytics(df)
+        
+        # 13) Display footer
+        st.markdown("""
+        <div class="footer">
+            <p>KwikFlip - Research and track your eBay flips</p>
+            <p style="font-size: 0.8rem;">Version 1.0</p>
+        </div>
+        """, unsafe_allow_html=True)
+    except Exception as e:
+        error_msg = f"An error occurred in the main function: {e}"
+        log_debug(error_msg)
+        log_debug(traceback.format_exc())
+        st.error(error_msg)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        st.error(f"Application error: {e}")
+        st.error(traceback.format_exc())write(f"Contains {len(df)} flips")
+    else:
+        st.write(f"Flips file does not exist: {FLIPS_FILE}")
+    
+    if os.path.exists(SEARCHES_FILE):
+        st.write(f"Searches file exists: {SEARCHES_FILE}")
+        try:
+            with open(SEARCHES_FILE, "r") as f:
+                searches = json.load(f)
+            st.write(f"Contains {len(searches)} saved searches")
+        except Exception as e:
+            st.write(f"Error reading searches file: {e}")
+    else:
+        st.write(f"Searches file does not exist: {SEARCHES_FILE}")
+
+# --- MAIN APPLICATION FUNCTION ---
+
+def main():
+    """Main application function"""
+    try:
+        # Show debug page if query parameter is present
+        if "debug" in st.query_params:
+            debug_page()
+            return
             
         # 1) Display header and sidebar  
         display_header()
@@ -2146,4 +2269,3 @@ if __name__ == "__main__":
     except Exception as e:
         st.error(f"Application error: {e}")
         st.error(traceback.format_exc())
-
