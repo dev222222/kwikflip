@@ -2144,18 +2144,4 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         st.error(f"Application error: {e}")
-        st.error(traceback.format_exc())write(f"Contains {len(df)} flips")
-    else:
-        st.write(f"Flips file does not exist: {FLIPS_FILE}")
-    
-    if os.path.exists(SEARCHES_FILE):
-        st.write(f"Searches file exists: {SEARCHES_FILE}")
-        try:
-            with open(SEARCHES_FILE, "r") as f:
-                searches = json.load(f)
-            st.write(f"Contains {len(searches)} saved searches")
-        except Exception as e:
-            st.write(f"Error reading searches file: {e}")
-    else:
-        st.write(f"Searches file does not exist: {SEARCHES_FILE}")
-
+        st.error(traceback.format_exc())
