@@ -6,7 +6,7 @@ services:
     startCommand: streamlit run app.py --server.port=$PORT --server.address=0.0.0.0
     envVars:
       - key: PYTHONUNBUFFERED
-        value: true
+        value: "true"
       - key: PYTHONPATH
         value: .
       - key: STREAMLIT_SERVER_PORT
@@ -14,8 +14,10 @@ services:
       - key: STREAMLIT_SERVER_ADDRESS
         value: 0.0.0.0
       - key: EBAY_APP_ID
-        value: "ChrisNeu-KwickFli-PRD-4476d6672-3d735724"
+        sync: false
       - key: EBAY_CERT_ID
-        value: "PRD-476d6672b383-aff6-493f-8e86-8d8f"
+        sync: false
       - key: EBAY_DEV_ID
-        value: "66568d71-5a17-44f1-bc26-48524000f823"
+        sync: false
+      - key: EBAY_USE_SANDBOX
+        value: "False"

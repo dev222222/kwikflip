@@ -1,21 +1,47 @@
-import time
-import datetime as dt
-from pathlib import Path
-import pandas as pd
-import numpy as np
+"""
+app.py - Main application file for KwikFlip
+"""
 import streamlit as st
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from dotenv import load_dotenv
-import requests
-from io import BytesIO
-from PIL import Image
+from datetime import datetime, timedelta
+import time
 import os
 import json
 import traceback
-import uuid
-import sys
 import base64
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Import custom API module
+from src.api.ebay_api import EbayAPI
+
+# --- SETUP ---
+# Load environment variables
+load_dotenv()
+
+# Configuration
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+FLIPS_FILE = DATA_DIR / "flips.csv"
+SEARCHES_FILE = DATA_DIR / "searches.json"
+MAX_RECENT_SEARCHES = 10
+
+# Set page config
+st.set_page_config(
+    page_title="KwikFlip - eBay Research Tool",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+DATA_DIR = Path("data")
+def ensure_data_dir():
+    """Ensure data directory exists"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+ # Call this early in your app initialization
+ensure_data_dir()
 
 # --- SESSION STATE INITIALIZATION ---
 if "filter_settings" not in st.session_state:
@@ -38,314 +64,31 @@ if "camera_photo" not in st.session_state:
     st.session_state.camera_photo = None
 if "debug_info" not in st.session_state:
     st.session_state.debug_info = []
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
+if "ebay_api" not in st.session_state:
+    st.session_state.ebay_api = EbayAPI()
+if "ebay_oauth_token" not in st.session_state:
+    st.session_state.ebay_oauth_token = None
+if "ebay_token_expiry" not in st.session_state:
+    st.session_state.ebay_token_expiry = 0
 
 # --- LOGGING FUNCTION ---
 def log_debug(message):
     """Add message to debug log and print to console"""
-    timestamp = dt.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     formatted_message = f"[{timestamp}] {message}"
+    
     # Add to session state debug info
     if len(st.session_state.debug_info) > 100:
         st.session_state.debug_info = st.session_state.debug_info[-100:]
     st.session_state.debug_info.append(formatted_message)
+    
     # Also print to standard output for server logs
     print(formatted_message)
 
-# --- EBAY CREDENTIALS CHECK FUNCTION ---
-def check_ebay_credentials():
-    """Check if eBay credentials are available and valid"""
-    has_app_id = EBAY_APP_ID is not None and EBAY_APP_ID != ""
-    has_cert_id = EBAY_CERT_ID is not None and EBAY_CERT_ID != ""
-    log_debug(f"EBAY_APP_ID exists: {has_app_id}")
-    log_debug(f"EBAY_CERT_ID exists: {has_cert_id}")
-    if has_app_id and has_cert_id:
-        log_debug("eBay credentials verification: PASS")
-    else:
-        log_debug("eBay credentials verification: FAIL")
-    return has_app_id and has_cert_id
-
-# Set Streamlit page config
-st.set_page_config(
-    page_title="KwikFlip - eBay Research Tool",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# For Render deployment - get PORT from environment
-PORT = int(os.environ.get("PORT", 8501))
-
-# Load environment variables from .env file if it exists
-load_dotenv()
-
-# Configuration
-EBAY_APP_ID = os.getenv("EBAY_APP_ID")
-EBAY_CERT_ID = os.getenv("EBAY_CERT_ID")
-EBAY_DEV_ID = os.getenv("EBAY_DEV_ID")
-DATA_DIR = Path("data")
-FLIPS_FILE = DATA_DIR / "flips.csv"
-SEARCHES_FILE = DATA_DIR / "searches.json"
-MAX_RECENT_SEARCHES = 10
-API_TIMEOUT = 15  # Reduced timeout for API calls
-
-# Debug - Print environment variables to logs (not visible to users)
-print(f"Python version: {sys.version}")
-print(f"Current working directory: {os.getcwd()}")
-print(f"EBAY_APP_ID exists: {EBAY_APP_ID is not None and EBAY_APP_ID != ''}")
-print(f"EBAY_CERT_ID exists: {EBAY_CERT_ID is not None and EBAY_CERT_ID != ''}")
-print(f"EBAY_DEV_ID exists: {EBAY_DEV_ID is not None and EBAY_DEV_ID != ''}")
-
-# eBay API endpoints - Using traditional API with Auth'n'Auth
-EBAY_FINDING_API_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
-EBAY_TRADING_API_URL = "https://api.ebay.com/ws/api.dll"
-
-def get_ebay_auth_token():
-    """Get static Auth'n'Auth token"""
-    # Use the static token from the eBay developer portal
-    token = "v^1.1#f^1#r^1#f^0#i^3#p^3#f^UI4xMF8xMTo4MjAyNzk4RkY2NjY3QTBGRUJDMjAxMEQzMUU5MDc1NF8xXzEjRV4yNjA="  # Replace with your actual token
-    log_debug("Using Auth'n'Auth token")
-    return token, None
-
-def search_ebay_traditional(query, sold=False, filters=None, limit=30):
-    """Search for items using eBay traditional API with Auth'n'Auth"""
-    try:
-        log_debug(f"Searching eBay with Auth'n'Auth for '{query}' (sold={sold})")
-        
-        # Get Auth token
-        token = get_ebay_auth_token()[0]
-        
-        # Set up the request
-        headers = {
-            "X-EBAY-API-IAF-TOKEN": token,
-            "X-EBAY-API-SITE-ID": "0",  # US site
-            "X-EBAY-API-CALL-NAME": "findItemsByKeywords" if not sold else "findCompletedItems",
-            "X-EBAY-API-VERSION": "1.13.0",
-            "Content-Type": "application/xml"
-        }
-        
-        # Build the XML request
-        xml_request = f"""<?xml version="1.0" encoding="UTF-8"?>
-        <findItemsByKeywordsRequest xmlns="http://www.ebay.com/marketplace/search/v1/services">
-            <keywords>{query}</keywords>
-            <paginationInput>
-                <entriesPerPage>{limit}</entriesPerPage>
-                <pageNumber>1</pageNumber>
-            </paginationInput>
-            <sortOrder>BestMatch</sortOrder>
-        </findItemsByKeywordsRequest>"""
-        
-        # Make the request
-        response = requests.post(EBAY_FINDING_API_URL, headers=headers, data=xml_request, timeout=API_TIMEOUT)
-        
-        if response.status_code != 200:
-            error_msg = f"eBay API returned status code {response.status_code}"
-            log_debug(f"{error_msg}: {response.text[:500]}")
-            return None, error_msg
-        
-        # Parse the XML response
-        try:
-            import xml.etree.ElementTree as ET
-            root = ET.fromstring(response.content)
-            
-            # Extract items
-            items = []
-            for item in root.findall(".//{http://www.ebay.com/marketplace/search/v1/services}item"):
-                try:
-                    item_data = {
-                        "id": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}itemId").text,
-                        "title": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}title").text,
-                        "url": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}viewItemURL").text,
-                        "image": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}galleryURL").text,
-                        "price": float(item.find(".//{http://www.ebay.com/marketplace/search/v1/services}currentPrice").text),
-                        "shipping": float(item.find(".//{http://www.ebay.com/marketplace/search/v1/services}shippingServiceCost").text),
-                        "end_time": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}endTime").text,
-                        "condition": item.find(".//{http://www.ebay.com/marketplace/search/v1/services}condition").find(".//{http://www.ebay.com/marketplace/search/v1/services}conditionDisplayName").text,
-                        "watchers": int(item.find(".//{http://www.ebay.com/marketplace/search/v1/services}watchCount").text) if item.find(".//{http://www.ebay.com/marketplace/search/v1/services}watchCount") is not None else 0,
-                        "sold": sold
-                    }
-                    items.append(item_data)
-                except Exception as e:
-                    log_debug(f"Error processing item: {e}")
-                    continue
-            
-            return items, None
-            
-        except Exception as e:
-            error_msg = f"Error parsing eBay API response: {e}"
-            log_debug(error_msg)
-            return None, error_msg
-            
-    except Exception as e:
-        error_msg = f"Error calling eBay API: {e}"
-        log_debug(error_msg)
-        log_debug(traceback.format_exc())
-        return None, error_msg
-
-def fetch_items(query, sold=False, filters=None, limit=30):
-    """Fetch items from eBay API or generate mock data"""
-    try:
-        # Log start of fetch operation
-        log_debug(f"Fetching {'sold' if sold else 'active'} items for query: '{query}'")
-        
-        # Check if eBay credentials are available
-        has_credentials = check_ebay_credentials()
-        
-        if has_credentials:
-            log_debug("Attempting to use eBay traditional API")
-            try:
-                # Attempt to use the eBay traditional API
-                items, error = search_ebay_traditional(query, sold, filters, limit)
-                
-                if items is not None:
-                    log_debug(f"Successfully retrieved {len(items)} items from eBay API")
-                    return items, None
-                else:
-                    error_msg = f"eBay API error: {error}. Falling back to mock data."
-                    log_debug(error_msg)
-                    st.warning(error_msg)
-                    # Fall through to mock data
-            except Exception as e:
-                error_msg = f"Error with eBay API: {e}. Falling back to mock data."
-                log_debug(error_msg)
-                
-                # Get full traceback
-                tb = traceback.format_exc()
-                log_debug(f"Traceback: {tb}")
-                
-                st.warning(error_msg)
-                # Fall through to mock data
-        else:
-            log_debug("eBay credentials not found or invalid")
-            st.info("Using mock data for demonstration. eBay API integration is being configured.")
-        
-        # Generate mock items as fallback
-        mock_items = generate_mock_items(count=limit, sold=sold)
-        return mock_items, None
-        
-    except Exception as e:
-        error_msg = f"Error in fetch_items: {e}"
-        log_debug(error_msg)
-        log_debug(traceback.format_exc())
-        return None, error_msg
-
-def process_image_search(image_data):
-    """
-    Process image for search (in a real implementation, this would
-    use eBay's Image Recognition API or a similar service)
-    """
-    log_debug("Processing image for search")
-    
-    # In a real implementation, we would send the image to eBay's API
-    # For now, we'll just return a simulated result
-    categories = [
-        "Electronics", "Clothing", "Collectibles", 
-        "Home & Garden", "Toys", "Books", "Other"
-    ]
-    
-    import random
-    
-    # Simulate API recognition result
-    simulated_results = {
-        "query": random.choice([
-            "vintage camera", "smartphone", "retro game console", 
-            "designer watch", "collectible figurine"
-        ]),
-        "category": random.choice(categories),
-        "confidence": random.uniform(0.65, 0.95)
-    }
-    
-    log_debug(f"Image recognition result: {simulated_results}")
-    
-    return simulated_results
-
-def generate_mock_items(count, sold=False):
-    """Generate mock item data for demonstration purposes"""
-    import random
-    from datetime import datetime, timedelta
-    
-    log_debug(f"Generating {count} mock {'sold' if sold else 'active'} items")
-    
-    items = []
-    conditions = ["New", "Used", "Like New", "For parts or not working"]
-    
-    for i in range(count):
-        # Create random end time within the last 30 days if sold, or future date if active
-        if sold:
-            days_ago = random.randint(1, 30)
-            end_time = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        else:
-            days_future = random.randint(1, 7)
-            end_time = (datetime.now() + timedelta(days=days_future)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        
-        # Create random price between $10 and $100
-        price = round(random.uniform(10, 100), 2)
-        
-        # Create random shipping cost between $0 and $15
-        shipping = round(random.uniform(0, 15), 2)
-        
-        # Generate item
-        item = {
-            "id": f"mock-{i}-{random.randint(10000, 99999)}",
-            "title": f"Mock Item {i+1} - Demo Product",
-            "url": "https://www.ebay.com",
-            "image": "https://via.placeholder.com/150",
-            "price": price,
-            "shipping": shipping,
-            "end_time": end_time,
-            "watchers": random.randint(0, 20),
-            "condition": random.choice(conditions),
-            "sold": sold
-        }
-        
-        items.append(item)
-    
-    return items
-
-def get_fee_rate(category):
-    """Get eBay fee rate for a category"""
-    fee_rates = {
-        "Electronics": 0.12,
-        "Clothing": 0.13,
-        "Collectibles": 0.125,
-        "Home & Garden": 0.12,
-        "Toys": 0.125,
-        "Books": 0.145,
-        "Other": 0.13
-    }
-    return fee_rates.get(category, 0.13)
-
-def get_recommended_platform(category, avg_price, condition):
-    """Get recommended selling platform based on item details"""
-    # Default recommendation
-    platform = "eBay"
-    reason = "General recommendation based on market size and visibility."
-    
-    # Customize based on category and price
-    if category == "Electronics" and avg_price > 100:
-        platform = "eBay"
-        reason = "Electronics over $100 typically perform well on eBay due to buyer trust and protection."
-    elif category == "Home & Garden" and avg_price < 50:
-        platform = "Facebook Marketplace"
-        reason = "Bulky home items are often best sold locally to avoid shipping costs."
-    elif category == "Clothing" and condition.lower() != "new":
-        platform = "Facebook Marketplace"
-        reason = "Used clothing often sells better locally without shipping costs."
-    elif category == "Collectibles":
-        platform = "eBay"
-        reason = "Collectibles reach the largest collector audience on eBay with auction options."
-    elif category == "Books":
-        platform = "Amazon"
-        reason = "Books typically reach more targeted buyers on Amazon."
-    
-    return platform, reason
-
-# --- DATA HANDLING FUNCTIONS ---
-
+# --- DATA FUNCTIONS ---
 def load_recent_searches():
     """Load recent searches from file"""
-    if os.path.exists(SEARCHES_FILE):
+    if SEARCHES_FILE.exists():
         try:
             with open(SEARCHES_FILE, "r") as f:
                 return json.load(f)
@@ -357,9 +100,6 @@ def load_recent_searches():
 def save_recent_searches():
     """Save recent searches to file"""
     try:
-        # Create directory if it doesn't exist
-        DATA_DIR.mkdir(exist_ok=True)
-        
         with open(SEARCHES_FILE, "w") as f:
             json.dump(st.session_state.recent_searches, f)
         
@@ -373,7 +113,7 @@ def save_recent_searches():
 
 def load_flips():
     """Load saved flips from CSV file"""
-    if not os.path.exists(FLIPS_FILE):
+    if not FLIPS_FILE.exists():
         # Create empty DataFrame with expected columns
         return pd.DataFrame(columns=[
             "timestamp", "title", "query", "category", "flip_type", "platform",
@@ -393,13 +133,10 @@ def save_flip(data):
     try:
         df = load_flips()
         # Add timestamp
-        data["timestamp"] = dt.datetime.now().isoformat()
+        data["timestamp"] = datetime.now().isoformat()
         
         # Append new flip
         df = pd.concat([df, pd.DataFrame([data])], ignore_index=True)
-        
-        # Create directory if it doesn't exist
-        DATA_DIR.mkdir(exist_ok=True)
         
         # Save to CSV
         df.to_csv(FLIPS_FILE, index=False)
@@ -452,15 +189,14 @@ def calculate_stats(items):
             "avg_total": 0.0
         }
 
-# --- UI AND DISPLAY FUNCTIONS ---
-
+# --- UI FUNCTIONS ---
 def display_header():
     """Display app header with logo and title"""
     st.markdown("""
-    <div class="main-header">
-        <h1>📊 KwikFlip</h1>
-        <p>Research, track, and analyze your eBay flips</p>
+    <div style="display: flex; align-items: center; margin-bottom: 1rem;">
+        <h1 style="margin: 0;">📊 KwikFlip</h1>
     </div>
+    <p style="margin-top: 0;">Research, track, and analyze your eBay flips</p>
     """, unsafe_allow_html=True)
 
 def display_sidebar():
@@ -491,72 +227,218 @@ def display_sidebar():
             value=st.session_state.filter_settings["exclude_words"]
         )
         
+        # eBay API status
         st.markdown("---")
-        st.markdown("### About")
-        st.markdown("KwikFlip helps you research potential flips on eBay and track your profits.")
+        st.subheader("API Status")
         
-        # Show eBay API status
-        st.markdown("---")
-        has_credentials = check_ebay_credentials()
+        # Check eBay credentials
+        api = st.session_state.ebay_api
+        has_credentials = api.check_credentials()
+        
         if has_credentials:
             st.success("✅ eBay API credentials configured")
             
-            # Add API test button
+            # Test API connection
             if st.button("Test eBay Connection"):
                 with st.spinner("Testing connection..."):
-                    success, message = test_ebay_connection()
-                    if success:
+                    token, error = api.get_oauth_token(force_refresh=True)
+                    if token:
                         st.success("✅ eBay API connection successful")
                     else:
-                        st.error(f"❌ {message}")
+                        st.error(f"❌ {error}")
         else:
             st.warning("⚠️ eBay API credentials not found")
-            if EBAY_APP_ID is None or EBAY_APP_ID == "":
+            
+            # Show what's missing
+            if not api.client_id:
                 st.error("EBAY_APP_ID is missing")
-            if EBAY_CERT_ID is None or EBAY_CERT_ID == "":
+            if not api.client_secret:
                 st.error("EBAY_CERT_ID is missing")
+            
+            # Help section
+            with st.expander("How to fix"):
+                st.markdown("""
+                1. Create an eBay Developer account at [developer.ebay.com](https://developer.ebay.com)
+                2. Create a new application and get your App ID (Client ID) and Cert ID (Client Secret)
+                3. Add these values to your .env file:
+                ```
+                EBAY_APP_ID=your_app_id_here
+                EBAY_CERT_ID=your_cert_id_here
+                EBAY_USE_SANDBOX=True
+                ```
+                """)
         
         # Debug info
-        with st.expander("Show Debug Info", expanded=False):
-            st.markdown("### Debug Information")
-            
-            # System info
-            st.markdown("#### System Info")
-            st.text(f"Session ID: {st.session_state.session_id[:8]}...")
-            st.text(f"Python: {sys.version.split(' ')[0]}")
-            
-            # Environment variables (sanitized)
-            st.markdown("#### Environment Variables")
-            st.text(f"EBAY_APP_ID: {'✓ Set' if EBAY_APP_ID else '✗ Missing'}")
-            st.text(f"EBAY_CERT_ID: {'✓ Set' if EBAY_CERT_ID else '✗ Missing'}")
-            st.text(f"EBAY_DEV_ID: {'✓ Set' if EBAY_DEV_ID else '✗ Missing'}")
-            
-            # OAuth Token status
-            st.markdown("#### OAuth Token Status")
-            has_token = st.session_state.ebay_oauth_token is not None
-            token_valid = (has_token and time.time() < st.session_state.ebay_token_expiry)
-            st.text(f"OAuth Token: {'✓ Valid' if token_valid else '✗ Invalid or Missing'}")
-            if token_valid:
-                expires_in = int(st.session_state.ebay_token_expiry - time.time())
-                st.text(f"Token expires in: {expires_in} seconds")
-            
-            # Refresh token button
-            if st.button("Refresh OAuth Token"):
-                with st.spinner("Getting new token..."):
-                    token, error = get_ebay_oauth_token()
-                    if token:
-                        st.success("✅ New OAuth token acquired")
-                    else:
-                        st.error(f"❌ Failed to get token: {error}")
-            
-            # Log display
-            st.markdown("#### Log")
-            st.text_area("Debug Log", value="\n".join(st.session_state.debug_info), height=400)
-            
-            # Clear logs button
+        with st.expander("Debug Info", expanded=False):
             if st.button("Clear Logs"):
                 st.session_state.debug_info = []
                 st.rerun()
+            
+            st.text_area("Debug Log", value="\n".join(st.session_state.debug_info), height=300)
+
+def show_recent_searches():
+    """Display recent searches with improved UI"""
+    if not st.session_state.recent_searches:
+        # Load saved searches if none in session state
+        try:
+            saved_searches = load_recent_searches()
+            if saved_searches:
+                st.session_state.recent_searches = saved_searches
+                log_debug(f"Loaded {len(saved_searches)} saved searches")
+        except Exception as e:
+            log_debug(f"Could not load recent searches: {e}")
+            st.session_state.recent_searches = []
+    
+    # Display recent searches if there are any
+    if st.session_state.recent_searches:
+        with st.expander("📜 Recent Searches", expanded=False):
+            for i, search in enumerate(st.session_state.recent_searches):
+                col1, col2, col3 = st.columns([3, 2, 1])
+                
+                # Query and category
+                col1.markdown(f"""
+                <div style="padding: 10px 0;">
+                    <div style="font-weight: 600;">{search['query']}</div>
+                    <div style="font-size: 0.8rem; color: #777;">{search.get('category', 'Unknown')}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Timestamp
+                timestamp = "N/A"
+                if 'timestamp' in search:
+                    try:
+                        timestamp_str = search['timestamp']
+                        if isinstance(timestamp_str, str):
+                            timestamp = datetime.fromisoformat(timestamp_str).strftime("%m/%d/%Y %I:%M %p")
+                        else:
+                            timestamp = str(timestamp_str)
+                    except Exception:
+                        timestamp = str(search.get('timestamp', 'N/A'))
+                
+                col2.markdown(f"""
+                <div style="padding: 10px 0; font-size: 0.9rem; color: #777;">
+                    {timestamp}
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Load button
+                if col3.button("Load", key=f"load_search_{i}"):
+                    st.session_state.last_search = search
+                    log_debug(f"Loaded search: {search['query']}")
+                    st.rerun()
+
+def display_search_form():
+    """Display search form and handle submission"""
+    st.markdown("### 🔎 Search for Items")
+    
+    # Create tabs for text and image search
+    search_tab, camera_tab = st.tabs(["Text Search", "Image Search"])
+    
+    with search_tab:
+        with st.form(key="search_form", clear_on_submit=False):
+            col1, col2 = st.columns([3, 1])
+            
+            query = col1.text_input("Search Query or UPC", 
+                                value="" if not st.session_state.last_search else st.session_state.last_search["query"])
+            
+            is_upc = col2.checkbox("Is UPC?", 
+                                value=False if not st.session_state.last_search else st.session_state.last_search.get("is_upc", False))
+            
+            col1, col2, col3 = st.columns(3)
+            
+            flip_type = col1.selectbox("Flip Type", 
+                                    ["Retail Arbitrage", "Online Arbitrage", "Thrift Flip", "Garage Sale", "Other"],
+                                    index=0 if not st.session_state.last_search else 
+                                    ["Retail Arbitrage", "Online Arbitrage", "Thrift Flip", "Garage Sale", "Other"].index(
+                                        st.session_state.last_search.get("flip_type", "Retail Arbitrage")))
+            
+            cost = col2.number_input("Your Cost ($)", 
+                                min_value=0.0, value=0.0 if not st.session_state.last_search else float(st.session_state.last_search.get("cost", 0.0)),
+                                format="%.2f")
+            
+            category = col3.selectbox("Category", 
+                                    ["Electronics", "Clothing", "Collectibles", "Home & Garden", "Toys", "Books", "Other"],
+                                    index=0 if not st.session_state.last_search else 
+                                    ["Electronics", "Clothing", "Collectibles", "Home & Garden", "Toys", "Books", "Other"].index(
+                                        st.session_state.last_search.get("category", "Electronics")))
+            
+            photo = st.file_uploader("Upload Item Photo (optional)", type=["jpg", "jpeg", "png"])
+            
+            submitted = st.form_submit_button("Search eBay")
+            
+            if submitted and query:
+                # Save the search
+                search_data = {
+                    "query": query,
+                    "is_upc": is_upc,
+                    "flip_type": flip_type,
+                    "cost": cost,
+                    "category": category,
+                    "photo": None,  # We'll handle the photo separately if needed
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                st.session_state.last_search = search_data
+                
+                # Save to recent searches
+                if not any(s["query"] == query for s in st.session_state.recent_searches):
+                    st.session_state.recent_searches.insert(0, search_data)
+                    if len(st.session_state.recent_searches) > MAX_RECENT_SEARCHES:
+                        st.session_state.recent_searches = st.session_state.recent_searches[:MAX_RECENT_SEARCHES]
+                    
+                    # Save to file
+                    save_recent_searches()
+                
+                log_debug(f"Submitted search: {query}")
+                return True
+    
+    with camera_tab:
+        st.markdown("### 📸 Take a Photo to Search")
+        
+        # Use st.camera_input for webcam capture
+        camera_input = st.camera_input("Take a picture of your item")
+        
+        if camera_input is not None:
+            # Store photo in session state
+            st.session_state.camera_photo = camera_input
+            
+            # Display a preview
+            st.image(camera_input, caption="Captured Image", use_column_width=True)
+            
+            if st.button("Search with this Image"):
+                # Process the image
+                with st.spinner("Analyzing image..."):
+                    # Process the image
+                    recognition_result = st.session_state.ebay_api.process_image_search(camera_input)
+                    
+                    # Create a search based on the image recognition
+                    image_search = {
+                        "query": recognition_result["query"],
+                        "is_upc": False,
+                        "flip_type": "Thrift Flip",  # Default for image searches
+                        "cost": 0.0,
+                        "category": recognition_result["category"],
+                        "photo": None,  # We don't need to store the photo again
+                        "timestamp": datetime.now().isoformat(),
+                        "image_search": True         # Flag to indicate this was an image search
+                    }
+                    
+                    st.session_state.last_search = image_search
+                    
+                    # Save to recent searches
+                    if not any(s.get("query") == recognition_result["query"] and s.get("image_search", False) for s in st.session_state.recent_searches):
+                        st.session_state.recent_searches.insert(0, image_search)
+                        if len(st.session_state.recent_searches) > MAX_RECENT_SEARCHES:
+                            st.session_state.recent_searches = st.session_state.recent_searches[:MAX_RECENT_SEARCHES]
+                        
+                        # Save to file
+                        save_recent_searches()
+                    
+                    st.success(f"Image recognized as: '{recognition_result['query']}' (Confidence: {recognition_result['confidence']:.0%})")
+                    log_debug(f"Image search completed: {recognition_result['query']}")
+                    st.rerun()
+    
+    return False
 
 def display_items(items, title, sort_options=False, pagination=True, page_size=5):
     """Display items with modern card-based UI"""
@@ -615,27 +497,27 @@ def display_items(items, title, sort_options=False, pagination=True, page_size=5
             end_time = item.get("end_time", "")
             if end_time:
                 try:
-                    end_date = dt.datetime.strptime(end_time, "%Y-%m-%dT%H:%M:%S.000Z")
+                    end_date = datetime.strptime(end_time, "%Y-%m-%dT%H:%M:%S.000Z")
                     formatted_date = end_date.strftime("%b %d, %Y")
                 except:
                     formatted_date = end_time
             
             # Create a card for each item
             st.markdown(f"""
-            <div class="item-card">
+            <div style="display: flex; border: 1px solid #ddd; border-radius: 5px; padding: 10px; margin-bottom: 10px;">
                 <div style="flex: 0 0 120px; margin-right: 15px;">
-                    <img src="{item.get('image', 'https://via.placeholder.com/150')}" class="item-image" alt="{item.get('title', 'Item')}">
+                    <img src="{item.get('image', 'https://via.placeholder.com/150')}" style="max-width: 100%; border-radius: 5px;" alt="{item.get('title', 'Item')}">
                 </div>
                 <div style="flex: 1;">
-                    <div class="item-title">{item.get('title', 'Untitled Item')}</div>
-                    <div class="item-meta">Condition: {item.get('condition', 'N/A')}</div>
-                    <div class="item-meta">{'Sold on' if item.get('sold') else 'Ends'}: {formatted_date}</div>
-                    {f'<div class="item-meta">Watchers: {item["watchers"]}</div>' if item.get('watchers', 0) > 0 else ''}
+                    <div style="font-weight: 600; font-size: 1.1rem;">{item.get('title', 'Untitled Item')}</div>
+                    <div style="font-size: 0.9rem; color: #666;">Condition: {item.get('condition', 'N/A')}</div>
+                    <div style="font-size: 0.9rem; color: #666;">{'Sold on' if item.get('sold') else 'Ends'}: {formatted_date}</div>
+                    {f'<div style="font-size: 0.9rem; color: #666;">Watchers: {item["watchers"]}</div>' if item.get('watchers', 0) > 0 else ''}
                 </div>
                 <div style="flex: 0 0 100px; text-align: right;">
-                    <div class="item-price">${item.get('price', 0):.2f}</div>
-                    {f'<div class="item-shipping">+${item["shipping"]:.2f} shipping</div>' if item.get('shipping', 0) > 0 else ''}
-                    <a href="{item.get('url', '#')}" target="_blank" class="st-emotion-cache-19rxjzo e1ewe7hr1" style="display: inline-block; margin-top: 10px;">View Item</a>
+                    <div style="font-weight: bold; font-size: 1.2rem;">${item.get('price', 0):.2f}</div>
+                    {f'<div style="font-size: 0.9rem; color: #666;">+${item["shipping"]:.2f} shipping</div>' if item.get('shipping', 0) > 0 else ''}
+                    <a href="{item.get('url', '#')}" target="_blank" style="display: inline-block; margin-top: 10px; color: #1e88e5; text-decoration: none;">View Item</a>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -643,185 +525,6 @@ def display_items(items, title, sort_options=False, pagination=True, page_size=5
         error_msg = f"Error displaying items: {e}"
         log_debug(error_msg)
         st.error(error_msg)
-
-def show_recent_searches():
-    """Display recent searches with improved UI"""
-    if not st.session_state.recent_searches:
-        # Load saved searches if none in session state
-        try:
-            saved_searches = load_recent_searches()
-            if saved_searches:
-                st.session_state.recent_searches = saved_searches
-                log_debug(f"Loaded {len(saved_searches)} saved searches")
-        except Exception as e:
-            log_debug(f"Could not load recent searches: {e}")
-            st.session_state.recent_searches = []
-    
-    # Only display if we have searches
-    if st.session_state.recent_searches:
-        with st.expander("📜 Recent Searches", expanded=False):
-            for i, search in enumerate(st.session_state.recent_searches):
-                # Display search info with better styling
-                try:
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    
-                    # Query and category
-                    col1.markdown(f"""
-                    <div style="padding: 10px 0;">
-                        <div style="font-weight: 600;">{search['query']}</div>
-                        <div style="font-size: 0.8rem; color: {THEME['light_text']};">{search.get('category', 'Unknown')}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Timestamp
-                    timestamp = "N/A"
-                    if 'timestamp' in search:
-                        try:
-                            timestamp_str = search['timestamp']
-                            if isinstance(timestamp_str, str):
-                                try:
-                                    timestamp = dt.datetime.fromisoformat(timestamp_str).strftime("%m/%d/%Y %I:%M %p")
-                                except ValueError:
-                                    timestamp = timestamp_str
-                            else:
-                                timestamp = str(timestamp_str)
-                        except Exception:
-                            timestamp = str(search.get('timestamp', 'N/A'))
-                    
-                    col2.markdown(f"""
-                    <div style="padding: 10px 0; font-size: 0.9rem; color: {THEME['light_text']};">
-                        {timestamp}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Load button
-                    if col3.button("Load", key=f"load_search_{i}"):
-                        st.session_state.last_search = search
-                        log_debug(f"Loaded search: {search['query']}")
-                        st.rerun()
-                
-                except Exception as e:
-                    error_msg = f"Error displaying search #{i+1}: {str(e)}"
-                    log_debug(error_msg)
-                    st.warning(error_msg)
-
-def display_search_form():
-    """Display search form and handle submission"""
-    st.markdown("### 🔎 Search for Items")
-    
-    # Tab-based search options
-    search_tab, camera_tab = st.tabs(["Text Search", "Image Search"])
-    
-    with search_tab:
-        with st.form(key="search_form", clear_on_submit=False):
-            col1, col2 = st.columns([3, 1])
-            
-            query = col1.text_input("Search Query or UPC", 
-                                value="" if not st.session_state.last_search else st.session_state.last_search["query"])
-            
-            is_upc = col2.checkbox("Is UPC?", 
-                                value=False if not st.session_state.last_search else st.session_state.last_search.get("is_upc", False))
-            
-            col1, col2, col3 = st.columns(3)
-            
-            flip_type = col1.selectbox("Flip Type", 
-                                    ["Retail Arbitrage", "Online Arbitrage", "Thrift Flip", "Garage Sale", "Other"],
-                                    index=0 if not st.session_state.last_search else 
-                                    ["Retail Arbitrage", "Online Arbitrage", "Thrift Flip", "Garage Sale", "Other"].index(
-                                        st.session_state.last_search.get("flip_type", "Retail Arbitrage")))
-            
-            cost = col2.number_input("Your Cost ($)", 
-                                min_value=0.0, value=0.0 if not st.session_state.last_search else float(st.session_state.last_search.get("cost", 0.0)),
-                                format="%.2f")
-            
-            category = col3.selectbox("Category", 
-                                    ["Electronics", "Clothing", "Collectibles", "Home & Garden", "Toys", "Books", "Other"],
-                                    index=0 if not st.session_state.last_search else 
-                                    ["Electronics", "Clothing", "Collectibles", "Home & Garden", "Toys", "Books", "Other"].index(
-                                        st.session_state.last_search.get("category", "Electronics")))
-            
-            photo = st.file_uploader("Upload Item Photo (optional)", type=["jpg", "jpeg", "png"])
-            
-            submitted = st.form_submit_button("Search eBay")
-            
-            if submitted and query:
-                # Save the search
-                search_data = {
-                    "query": query,
-                    "is_upc": is_upc,
-                    "flip_type": flip_type,
-                    "cost": cost,
-                    "category": category,
-                    "photo": None,  # We'll handle the photo separately if needed
-                    "timestamp": dt.datetime.now().isoformat()
-                }
-                
-                st.session_state.last_search = search_data
-                
-                # Save to recent searches
-                if search_data not in st.session_state.recent_searches:
-                    st.session_state.recent_searches.insert(0, search_data)
-                    if len(st.session_state.recent_searches) > MAX_RECENT_SEARCHES:
-                        st.session_state.recent_searches = st.session_state.recent_searches[:MAX_RECENT_SEARCHES]
-                    
-                    # Save to file
-                    save_recent_searches()
-                
-                log_debug(f"Submitted search: {query}")
-                return True
-    
-    with camera_tab:
-        process_camera_photo()
-    
-    return False
-
-def process_camera_photo():
-    """Capture and process a photo from the webcam"""
-    st.markdown("### 📸 Take a Photo to Search")
-    
-    # Use st.camera_input for webcam capture
-    camera_input = st.camera_input("Take a picture of your item")
-    
-    if camera_input is not None:
-        # Store photo in session state
-        st.session_state.camera_photo = camera_input
-        
-        # Display a preview
-        st.image(camera_input, caption="Captured Image", use_column_width=True)
-        
-        if st.button("Search with this Image"):
-            # Process the image
-            with st.spinner("Analyzing image..."):
-                # In a real implementation, this would call eBay's image recognition API
-                # For now, we'll use our simulated function
-                recognition_result = process_image_search(camera_input)
-                
-                # Create a search based on the image recognition
-                image_search = {
-                    "query": recognition_result["query"],
-                    "is_upc": False,
-                    "flip_type": "Thrift Flip",  # Default for image searches
-                    "cost": 0.0,
-                    "category": recognition_result["category"],
-                    "photo": None,  # We don't need to store the photo again
-                    "timestamp": dt.datetime.now().isoformat(),
-                    "image_search": True         # Flag to indicate this was an image search
-                }
-                
-                st.session_state.last_search = image_search
-                
-                # Save to recent searches
-                if image_search not in st.session_state.recent_searches:
-                    st.session_state.recent_searches.insert(0, image_search)
-                    if len(st.session_state.recent_searches) > MAX_RECENT_SEARCHES:
-                        st.session_state.recent_searches = st.session_state.recent_searches[:MAX_RECENT_SEARCHES]
-                    
-                    # Save to file
-                    save_recent_searches()
-                
-                st.success(f"Image recognized as: '{recognition_result['query']}' (Confidence: {recognition_result['confidence']:.0%})")
-                log_debug(f"Image search completed: {recognition_result['query']}")
-                st.rerun()
 
 def display_metrics(active_stats, sold_stats, fee_rate):
     """Display metrics cards with item statistics"""
@@ -836,41 +539,34 @@ def display_metrics(active_stats, sold_stats, fee_rate):
     cols = st.columns(4)
     
     # Metric 1: Active Listings
-    cols[0].markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">Active Listings</div>
-        <div class="metric-value">{active_stats['count']}</div>
-        <div>Avg: ${active_stats['avg_price']:.2f}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    cols[0].metric(
+        "Active Listings",
+        f"{active_stats['count']}",
+        f"Avg: ${active_stats['avg_price']:.2f}"
+    )
     
     # Metric 2: Sold Listings
-    cols[1].markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">Sold Listings</div>
-        <div class="metric-value">{sold_stats['count']}</div>
-        <div>Avg: ${sold_stats['avg_price']:.2f}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    cols[1].metric(
+        "Sold Listings",
+        f"{sold_stats['count']}",
+        f"Avg: ${sold_stats['avg_price']:.2f}"
+    )
     
     # Metric 3: Sell-Through Rate
-    cols[2].markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">Sell-Through Rate</div>
-        <div class="metric-value">{sell_through_rate:.1f}%</div>
-        <div>In the last {st.session_state.filter_settings["days_sold"]} days</div>
-    </div>
-    """, unsafe_allow_html=True)
+    cols[2].metric(
+        "Sell-Through Rate",
+        f"{sell_through_rate:.1f}%",
+        f"Last {st.session_state.filter_settings['days_sold']} days"
+    )
     
     # Metric 4: Price Difference
-    card_class = "profit-card" if price_diff >= 0 else "loss-card"
-    cols[3].markdown(f"""
-    <div class="{card_class}">
-        <div class="metric-label">Price Difference</div>
-        <div class="metric-value">${abs(price_diff):.2f}</div>
-        <div>{price_diff_percent:.1f}% {'higher' if price_diff >= 0 else 'lower'} when sold</div>
-    </div>
-    """, unsafe_allow_html=True)
+    delta_color = "normal" if price_diff >= 0 else "inverse"
+    cols[3].metric(
+        "Price Difference",
+        f"${abs(price_diff):.2f}",
+        f"{abs(price_diff_percent):.1f}% {'higher' if price_diff >= 0 else 'lower'} when sold",
+        delta_color=delta_color
+    )
 
 def generate_price_chart(active_items, sold_items):
     """Generate price distribution chart"""
@@ -889,7 +585,7 @@ def generate_price_chart(active_items, sold_items):
                 x=active_prices,
                 nbinsx=10,
                 name="Active Listings",
-                marker_color=THEME["primary"],
+                marker_color="#1e88e5",
                 opacity=0.7
             ))
         if sold_prices:
@@ -897,7 +593,7 @@ def generate_price_chart(active_items, sold_items):
                 x=sold_prices,
                 nbinsx=10,
                 name="Sold Listings",
-                marker_color=THEME["success"],
+                marker_color="#43a047",
                 opacity=0.7
             ))
         
@@ -940,7 +636,7 @@ def generate_volume_chart(active_items, sold_items):
         for item in sold_items:
             if item.get("end_time"):
                 try:
-                    date = dt.datetime.strptime(item["end_time"], "%Y-%m-%dT%H:%M:%S.000Z")
+                    date = datetime.strptime(item["end_time"], "%Y-%m-%dT%H:%M:%S.000Z")
                     dates.append(date)
                 except ValueError:
                     pass
@@ -959,7 +655,7 @@ def generate_volume_chart(active_items, sold_items):
             x=sorted_dates,
             y=[date_counts[d] for d in sorted_dates],
             name="Sales Volume",
-            marker_color=THEME["success"],
+            marker_color="#43a047",
             hovertemplate='Date: %{x}<br>Units Sold: %{y}<extra></extra>'
         ))
         
@@ -1002,11 +698,7 @@ def display_profit_calculator(active_stats, sold_stats, cost, category, flip_typ
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("""
-            <div style="padding: 10px 0; margin-bottom: 15px;">
-                <div style="font-weight: 600; font-size: 1.1rem;">Item Details</div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown("#### Item Details")
             
             your_cost = st.number_input("Your Cost ($)", value=float(cost), min_value=0.0, step=0.01, format="%.2f")
             selling_price = st.number_input("Selling Price ($)", value=float(sold_stats["avg_price"]), min_value=0.0, step=0.01, format="%.2f")
@@ -1022,7 +714,7 @@ def display_profit_calculator(active_stats, sold_stats, cost, category, flip_typ
             
             # Platform-specific fee calculation
             fee_rates = {
-                "eBay": get_fee_rate(category),
+                "eBay": st.session_state.ebay_api.get_fee_rate(category),
                 "Facebook Marketplace": 0.05,  # 5% fee
                 "Craigslist": 0.00,          # No fee
                 "Etsy": 0.065,              # 6.5% fee + listing fee
@@ -1049,19 +741,15 @@ def display_profit_calculator(active_stats, sold_stats, cost, category, flip_typ
             net_profit = total_rev - total_fee - shipping_cost - your_cost
             roi = (net_profit / your_cost) * 100 if your_cost > 0 else 0
             
-            # Determine card style based on profit
-            card_class = "profit-card" if net_profit > 0 else "loss-card"
+            # Display profit breakdown
+            st.markdown("#### Profit Analysis")
             
-            st.markdown("""
-            <div style="padding: 10px 0; margin-bottom: 15px;">
-                <div style="font-weight: 600; font-size: 1.1rem;">Profit Analysis</div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Create profit breakdown card
+            profit_color = "#43a047" if net_profit > 0 else "#e53935"
             
-            # Display profit breakdown with improved styling
             st.markdown(f"""
-            <div class="{card_class}">
-                <h4 style="margin-top: 0;">Profit Breakdown</h4>
+            <div style="border: 1px solid {profit_color}; border-radius: 5px; padding: 15px; margin-bottom: 20px;">
+                <h4 style="margin-top: 0; color: {profit_color};">Profit Breakdown</h4>
                 <div style="display: flex; justify-content: space-between; margin: 10px 0;">
                     <span>Item Price:</span>
                     <span>${selling_price:.2f}</span>
@@ -1089,7 +777,7 @@ def display_profit_calculator(active_stats, sold_stats, cost, category, flip_typ
                     <span>-${your_cost:.2f}</span>
                 </div>
                 
-                <div style="display: flex; justify-content: space-between; margin: 10px 0; font-weight: 700; font-size: 1.2rem;">
+                <div style="display: flex; justify-content: space-between; margin: 10px 0; font-weight: 700; font-size: 1.2rem; color: {profit_color};">
                     <span>Net Profit:</span>
                     <span>${net_profit:.2f}</span>
                 </div>
@@ -1100,21 +788,7 @@ def display_profit_calculator(active_stats, sold_stats, cost, category, flip_typ
             </div>
             """, unsafe_allow_html=True)
             
-            # Add platform comparison
-            if platform != "eBay":
-                ebay_fee_rate = get_fee_rate(category)
-                ebay_fee = total_rev * ebay_fee_rate
-                ebay_profit = total_rev - ebay_fee - shipping_cost - your_cost
-                
-                if ebay_profit > net_profit:
-                    st.markdown(f"""
-                    <div style="background-color: rgba(255, 193, 7, 0.1); border-left: 4px solid {THEME["warning"]}; padding: 10px; margin-top: 15px; border-radius: 4px;">
-                        <div style="font-weight: 600;">Platform Insight</div>
-                        <p>Selling on eBay might give you ${ebay_profit - net_profit:.2f} more profit for this item.</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            # Save button with improved styling
+            # Save button
             if st.button("Save This Flip", type="primary"):
                 # Collect data to save
                 flip_data = {
@@ -1131,7 +805,7 @@ def display_profit_calculator(active_stats, sold_stats, cost, category, flip_typ
                     "additional_fee": additional_fee,
                     "net_profit": net_profit,
                     "roi": roi,
-                    "sold_date": dt.datetime.now().strftime("%Y-%m-%d"),
+                    "sold_date": datetime.now().strftime("%Y-%m-%d"),
                     "notes": notes
                 }
                 
@@ -1142,23 +816,14 @@ def display_profit_calculator(active_stats, sold_stats, cost, category, flip_typ
                     st.error("Failed to save flip. Please try again.")
     
     with insights_tab:
-        # Market-based suggestions
-        st.markdown("""
-        <div style="padding: 10px 0;">
-            <div style="font-weight: 600; font-size: 1.1rem;">Market-Based Recommendations</div>
-        </div>
-        """, unsafe_allow_html=True)
+        # Market recommendations
+        st.markdown("#### Market-Based Recommendations")
         
-        # Calculate platform recommendations based on item category
+        # Calculate platform recommendations
         best_platform, reason = get_recommended_platform(category, sold_stats["avg_price"], st.session_state.filter_settings["condition"])
         
         # Display recommendation
-        st.markdown(f"""
-        <div class="card" style="margin-bottom: 20px;">
-            <div style="font-weight: 600; margin-bottom: 10px;">Recommended Platform: {best_platform}</div>
-            <p>{reason}</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.info(f"Recommended Platform: **{best_platform}**\n\n{reason}")
         
         # Add price recommendation
         target_price = sold_stats["avg_price"]
@@ -1168,17 +833,39 @@ def display_profit_calculator(active_stats, sold_stats, cost, category, flip_typ
         
         price_rec = max(target_price * 0.95, your_cost * 1.3)  # Ensure at least 30% ROI
         
+        st.markdown("#### Pricing Strategy")
         st.markdown(f"""
-        <div class="card">
-            <div style="font-weight: 600; margin-bottom: 10px;">Pricing Strategy</div>
-            <p>Based on market data, we recommend pricing at <b>${price_rec:.2f}</b></p>
-            <ul style="padding-left: 20px;">
-                <li>Market average is ${sold_stats["avg_price"]:.2f}</li>
-                <li>Median sold price is ${sold_stats["median_price"]:.2f}</li>
-                <li>Competitive pricing may increase sell-through rate</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
+        Based on market data, we recommend pricing at **${price_rec:.2f}**
+        
+        * Market average is ${sold_stats["avg_price"]:.2f}
+        * Median sold price is ${sold_stats["median_price"]:.2f}
+        * Competitive pricing may increase sell-through rate
+        """)
+
+def get_recommended_platform(category, avg_price, condition):
+    """Get recommended selling platform based on item details"""
+    # Default recommendation
+    platform = "eBay"
+    reason = "General recommendation based on market size and visibility."
+    
+    # Customize based on category and price
+    if category == "Electronics" and avg_price > 100:
+        platform = "eBay"
+        reason = "Electronics over $100 typically perform well on eBay due to buyer trust and protection."
+    elif category == "Home & Garden" and avg_price < 50:
+        platform = "Facebook Marketplace"
+        reason = "Bulky home items are often best sold locally to avoid shipping costs."
+    elif category == "Clothing" and condition.lower() != "new":
+        platform = "Facebook Marketplace"
+        reason = "Used clothing often sells better locally without shipping costs."
+    elif category == "Collectibles":
+        platform = "eBay"
+        reason = "Collectibles reach the largest collector audience on eBay with auction options."
+    elif category == "Books":
+        platform = "Amazon"
+        reason = "Books typically reach more targeted buyers on Amazon."
+    
+    return platform, reason
 
 def display_analytics(df):
     """Display analytics for saved flips with improved visualizations"""
@@ -1200,7 +887,7 @@ def display_analytics(df):
         if "timestamp" in df.columns:
             df["date"] = pd.to_datetime(df["timestamp"]).dt.date
         
-        # Key metrics with improved styling
+        # Key metrics
         col1, col2, col3, col4 = st.columns(4)
         
         total_flips = len(df)
@@ -1208,33 +895,10 @@ def display_analytics(df):
         avg_roi = df["roi"].mean() if "roi" in df.columns else 0
         total_invested = df["cost"].sum() if "cost" in df.columns else 0
         
-        col1.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Total Flips</div>
-            <div class="metric-value">{total_flips}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        col2.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Total Profit</div>
-            <div class="metric-value">${total_profit:.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        col3.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Average ROI</div>
-            <div class="metric-value">{avg_roi:.1f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        col4.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Total Invested</div>
-            <div class="metric-value">${total_invested:.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        col1.metric("Total Flips", total_flips)
+        col2.metric("Total Profit", f"${total_profit:.2f}")
+        col3.metric("Average ROI", f"{avg_roi:.1f}%")
+        col4.metric("Total Invested", f"${total_invested:.2f}")
         
         # Create tabs for different analytics views
         tab1, tab2, tab3, tab4 = st.tabs([
@@ -1248,7 +912,7 @@ def display_analytics(df):
             if "category" in df.columns and "net_profit" in df.columns:
                 category_profit = df.groupby("category")["net_profit"].sum().reset_index()
                 
-                # Create an improved bar chart for profit by category
+                # Create a bar chart for profit by category
                 fig = px.bar(
                     category_profit, 
                     x="category", 
@@ -1260,29 +924,12 @@ def display_analytics(df):
                     text="net_profit"
                 )
                 
-                # Improve the figure styling
                 fig.update_traces(
                     texttemplate='$%{text:.2f}', 
                     textposition='outside'
                 )
-                fig.update_layout(
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    margin=dict(l=40, r=40, t=60, b=40),
-                    title_font_size=16
-                )
                 
                 st.plotly_chart(fig, use_container_width=True)
-                
-                # Add additional insight
-                if len(category_profit) > 1:
-                    best_category = category_profit.loc[category_profit["net_profit"].idxmax()]
-                    st.markdown(f"""
-                    <div style="background-color: rgba(76, 175, 80, 0.1); border-left: 4px solid {THEME["success"]}; padding: 10px; margin-top: 15px; border-radius: 4px;">
-                        <div style="font-weight: 600;">Category Insight</div>
-                        <p>Your most profitable category is <b>{best_category['category']}</b> with ${best_category['net_profit']:.2f} in profits. Consider focusing more on this category.</p>
-                    </div>
-                    """, unsafe_allow_html=True)
         
         with tab2:
             if "date" in df.columns and "net_profit" in df.columns:
@@ -1298,7 +945,7 @@ def display_analytics(df):
                     x=time_profit["date"],
                     y=time_profit["net_profit"],
                     name="Daily Profit",
-                    marker_color=THEME["primary"]
+                    marker_color="#1e88e5"
                 ))
                 
                 # Add line chart for cumulative profit
@@ -1307,7 +954,7 @@ def display_analytics(df):
                     y=time_profit["cumulative_profit"],
                     name="Cumulative Profit",
                     mode="lines+markers",
-                    line=dict(color=THEME["success"], width=3),
+                    line=dict(color="#43a047", width=3),
                     marker=dict(size=8),
                     yaxis="y2"
                 ))
@@ -1315,7 +962,6 @@ def display_analytics(df):
                 # Update layout with dual y-axes
                 fig.update_layout(
                     title="Profit Over Time",
-                    title_font_size=16,
                     xaxis_title="Date",
                     yaxis_title="Daily Profit ($)",
                     yaxis2=dict(
@@ -1324,41 +970,19 @@ def display_analytics(df):
                         side="right",
                         showgrid=False
                     ),
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    margin=dict(l=40, r=40, t=60, b=40),
                     legend=dict(
                         orientation="h",
                         yanchor="bottom",
                         y=1.02,
                         xanchor="center",
                         x=0.5
-                    ),
-                    hovermode="x unified"
+                    )
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
-                
-                # Add trend analysis if we have at least 3 data points
-                if len(time_profit) >= 3:
-                    recent_trend = time_profit.iloc[-3:]["net_profit"].mean()
-                    overall_avg = time_profit["net_profit"].mean()
-                    
-                    trend_text = "Your recent profit trend is similar to your overall average."
-                    if recent_trend > overall_avg * 1.2:
-                        trend_text = "Your profits are trending upward! Your recent average is higher than your overall average."
-                    elif recent_trend < overall_avg * 0.8:
-                        trend_text = "Your profits are trending downward. Your recent average is lower than your overall average."
-                    
-                    st.markdown(f"""
-                    <div style="background-color: rgba(33, 150, 243, 0.1); border-left: 4px solid {THEME["primary"]}; padding: 10px; margin-top: 15px; border-radius: 4px;">
-                        <div style="font-weight: 600;">Trend Analysis</div>
-                        <p>{trend_text}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
         
         with tab3:
-            # Platform comparison (if we have platform data)
+            # Platform comparison
             if "platform" in df.columns and "net_profit" in df.columns:
                 platform_data = df.groupby("platform").agg({
                     "net_profit": ["sum", "mean", "count"],
@@ -1384,63 +1008,11 @@ def display_analytics(df):
                 # Display as a styled dataframe
                 st.dataframe(
                     pd.DataFrame(table_data).sort_values("Platform"),
-                    use_container_width=True,
-                    hide_index=True
+                    use_container_width=True
                 )
-                
-                # Create a pie chart for platform distribution
-                fig = px.pie(
-                    platform_data,
-                    values="count",
-                    names="platform",
-                    title="Sales by Platform",
-                    hole=0.4,
-                    color_discrete_sequence=px.colors.sequential.Blues_r
-                )
-                
-                fig.update_layout(
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    margin=dict(l=20, r=20, t=40, b=20),
-                    title_font_size=16
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Add bubble chart for profit vs. ROI by platform
-                fig = px.scatter(
-                    platform_data,
-                    x="avg_profit",
-                    y="avg_roi",
-                    size="count",
-                    color="total_profit",
-                    hover_name="platform",
-                    text="platform",
-                    title="Platform Comparison: Profit vs. ROI",
-                    labels={
-                        "avg_profit": "Average Profit per Item ($)",
-                        "avg_roi": "Average ROI (%)",
-                        "count": "Number of Items Sold"
-                    },
-                    color_continuous_scale=px.colors.sequential.Blues
-                )
-                
-                fig.update_traces(
-                    textposition="top center",
-                    marker=dict(sizemode="area", sizeref=0.1)
-                )
-                
-                fig.update_layout(
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    margin=dict(l=40, r=40, t=60, b=40),
-                    title_font_size=16
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
         
         with tab4:
-            # Display all flips in a table with improved UI
+            # Display all flips in a table
             if not df.empty:
                 # Format columns for display
                 display_df = df.copy()
@@ -1478,39 +1050,37 @@ def display_analytics(df):
                 # Display the dataframe
                 st.dataframe(
                     display_df,
-                    use_container_width=True,
-                    hide_index=True
+                    use_container_width=True
                 )
                 
                 # Export options
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    if st.button("Export Flips to CSV", type="primary"):
-                        # Export full data
-                        csv = df.to_csv(index=False)
-                        st.download_button(
-                            label="Download CSV",
-                            data=csv,
-                            file_name="kwikflip_data.csv",
-                            mime="text/csv"
-                        )
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label="Export to CSV",
+                        data=csv,
+                        file_name="kwikflip_data.csv",
+                        mime="text/csv"
+                    )
                 
                 with col2:
-                    # Add Excel export option
-                    if st.button("Export Flips to Excel"):
-                        # Create Excel file in memory
-                        excel_buffer = BytesIO()
-                        with pd.ExcelWriter(excel_buffer) as writer:
-                            df.to_excel(writer, index=False, sheet_name="Flips")
-                        
-                        excel_data = excel_buffer.getvalue()
-                        st.download_button(
-                            label="Download Excel",
-                            data=excel_data,
-                            file_name="kwikflip_data.xlsx",
-                            mime="application/vnd.ms-excel"
-                        )
+                    # Create Excel file in memory
+                    from io import BytesIO
+                    import pandas as pd
+                    
+                    buffer = BytesIO()
+                    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                        df.to_excel(writer, index=False, sheet_name="Flips")
+                    
+                    excel_data = buffer.getvalue()
+                    st.download_button(
+                        label="Export to Excel",
+                        data=excel_data,
+                        file_name="kwikflip_data.xlsx",
+                        mime="application/vnd.ms-excel"
+                    )
     except Exception as e:
         error_msg = f"Error displaying analytics: {e}"
         log_debug(error_msg)
@@ -1524,37 +1094,49 @@ def display_marketplace_comparison():
     # Create comparison data
     platforms = [
         {
-            "platform": "eBay",
-            "fee_rate": "12-15%",
-            "audience": "Global",
-            "best_for": "Electronics, Collectibles, Specialty items",
-            "payment": "Secure through platform",
-            "integration": "Full API integration available"
+            "Platform": "eBay",
+            "Fee Rate": "12-15%",
+            "Audience": "Global",
+            "Best For": "Electronics, Collectibles, Specialty items",
+            "Payment": "Secure through platform",
+            "Integration": "Full API integration available"
         },
         {
-            "platform": "Facebook Marketplace",
-            "fee_rate": "0% for local, 5% for shipped",
-            "audience": "Local primarily",
-            "best_for": "Furniture, Home goods, Local pickup items",
-            "payment": "Cash or peer-to-peer",
-            "integration": "No public API available"
+            "Platform": "Facebook Marketplace",
+            "Fee Rate": "0% for local, 5% for shipped",
+            "Audience": "Local primarily",
+            "Best For": "Furniture, Home goods, Local pickup items",
+            "Payment": "Cash or peer-to-peer",
+            "Integration": "No public API available"
         },
         {
-            "platform": "Craigslist",
-            "fee_rate": "$0-5 posting fee",
-            "audience": "Local only",
-            "best_for": "Furniture, Free items, Local services",
-            "payment": "Cash only (typically)",
-            "integration": "No public API available"
+            "Platform": "Craigslist",
+            "Fee Rate": "$0-5 posting fee",
+            "Audience": "Local only",
+            "Best For": "Furniture, Free items, Local services",
+            "Payment": "Cash only (typically)",
+            "Integration": "No public API available"
+        },
+        {
+            "Platform": "Amazon",
+            "Fee Rate": "15% + additional fees",
+            "Audience": "Global",
+            "Best For": "Books, New products, High volume",
+            "Payment": "Secure through platform",
+            "Integration": "API available"
+        },
+        {
+            "Platform": "Mercari",
+            "Fee Rate": "10%",
+            "Audience": "National",
+            "Best For": "Clothing, Small items, Used goods",
+            "Payment": "Secure through platform",
+            "Integration": "Limited API"
         }
     ]
     
     # Display as a table
-    st.dataframe(
-        pd.DataFrame(platforms),
-        use_container_width=True,
-        hide_index=True
-    )
+    st.table(pd.DataFrame(platforms))
 
 def display_quick_start_guide():
     """Display quick start guide"""
@@ -1576,115 +1158,17 @@ def display_quick_start_guide():
         - **Be Platform-Flexible**: Different items sell better on different marketplaces
         """)
 
-# --- DEBUG ROUTE ---
-
-def debug_page():
-    """Display debug information page"""
-    st.title("🔍 KwikFlip Debug Page")
-    
-    st.write("### System Information")
-    st.code(f"""
-Python Version: {sys.version}
-Working Directory: {os.getcwd()}
-Data Directory: {DATA_DIR}
-Session ID: {st.session_state.session_id}
-    """)
-    
-    st.write("### Environment Variables")
-    st.code(f"""
-EBAY_APP_ID: {'✓ Set' if EBAY_APP_ID else '✗ Missing'}
-EBAY_CERT_ID: {'✓ Set' if EBAY_CERT_ID else '✗ Missing'}
-EBAY_DEV_ID: {'✓ Set' if EBAY_DEV_ID else '✗ Missing'}
-    """)
-    
-    # Test eBay connection
-    st.write("### eBay API Connection")
-    if st.button("Test eBay API Connection"):
-        with st.spinner("Testing connection..."):
-            success, message = test_ebay_connection()
-            if success:
-                st.success(f"✅ Connection successful: {message}")
-            else:
-                st.error(f"❌ Connection failed: {message}")
-    
-    # OAuth token detail section
-    st.write("### OAuth Token Status")
-    
-    has_token = st.session_state.ebay_oauth_token is not None
-    token_valid = (has_token and time.time() < st.session_state.ebay_token_expiry)
-    
-    if has_token:
-        # Show token info (partially masked)
-        token_sample = f"{st.session_state.ebay_oauth_token[:10]}...{st.session_state.ebay_oauth_token[-10:]}"
-        st.write(f"Token: {token_sample}")
-        
-        # Show expiry info
-        if token_valid:
-            expires_in = int(st.session_state.ebay_token_expiry - time.time())
-            st.success(f"Token is valid for {expires_in} more seconds")
-        else:
-            st.error("Token has expired")
-    else:
-        st.warning("No OAuth token in session")
-    
-    # Button to get a new token
-    if st.button("Get New OAuth Token"):
-        with st.spinner("Requesting OAuth token..."):
-            token, error = get_ebay_oauth_token()
-            if token:
-                st.success("Successfully acquired OAuth token")
-            else:
-                st.error(f"Failed to get token: {error}")
-    
-    # Session state explorer
-    st.write("### Session State")
-    with st.expander("Session State Explorer", expanded=False):
-        session_dict = {k: v for k, v in st.session_state.items() if k not in ["debug_info", "ebay_oauth_token"]}
-        st.json(session_dict)
-    
-    # Debug log
-    st.write("### Debug Log")
-    st.code("\n".join(st.session_state.debug_info))
-    
-    # Data files
-    st.write("### Data Files")
-    if os.path.exists(FLIPS_FILE):
-        st.write(f"Flips file exists: {FLIPS_FILE}")
-        df = load_flips()
-        st.write(f"Contains {len(df)} flips")
-    else:
-        st.write(f"Flips file does not exist: {FLIPS_FILE}")
-    
-    if os.path.exists(SEARCHES_FILE):
-        st.write(f"Searches file exists: {SEARCHES_FILE}")
-        try:
-            with open(SEARCHES_FILE, "r") as f:
-                searches = json.load(f)
-            st.write(f"Contains {len(searches)} saved searches")
-        except Exception as e:
-            st.write(f"Error reading searches file: {e}")
-    else:
-        st.write(f"Searches file does not exist: {SEARCHES_FILE}")
-
-# --- MAIN APPLICATION FUNCTION ---
-
 def main():
     """Main application function"""
     try:
-        # Show debug page if query parameter is present
-        params = st.query_params  # QueryParams proxy object
-        if params.get("debug") is not None:  # works for ?debug or ?debug=1
-            debug_page()
-            return
-            
-        # 1) Display header and sidebar  
+        # Display header and sidebar
         display_header()
         display_sidebar()
         
-        # 2) Show recent searches
+        # Show recent searches
         show_recent_searches()
         
-        # 3) Show the search form  
+        # Show the search form
         did_search = display_search_form()
         
         # Show marketplace information if no search
@@ -1699,24 +1183,25 @@ def main():
             
             return
 
-        # 4) Get search parameters from session state
+        # Get search parameters from session state
         search = st.session_state.last_search
-        query     = search["query"]
-        is_upc    = search.get("is_upc", False)
+        query = search["query"]
+        is_upc = search.get("is_upc", False)
         flip_type = search.get("flip_type", "Retail Arbitrage")
-        cost      = search.get("cost", 0.0)
-        category  = search.get("category", "Electronics")
-        filters   = st.session_state.filter_settings
+        cost = search.get("cost", 0.0)
+        category = search.get("category", "Electronics")
+        filters = st.session_state.filter_settings
         
         # Check if this was an image search
         is_image_search = search.get("image_search", False)
         if is_image_search:
             st.info(f"📸 Image Search: Recognized as '{query}'")
 
-        # 5) Fetch data  
+        # Fetch data
         with st.spinner("Fetching data..."):
-            active_items, active_error = fetch_items(query, sold=False, filters=filters)
-            sold_items, sold_error = fetch_items(query, sold=True, filters=filters)
+            api = st.session_state.ebay_api
+            active_items, active_error = api.search_listings(query, sold=False, filters=filters)
+            sold_items, sold_error = api.search_listings(query, sold=True, filters=filters)
             
             # Store items in session state
             st.session_state.active_items = active_items
@@ -1728,41 +1213,41 @@ def main():
             if sold_error:
                 st.warning(f"Notice for sold items: {sold_error}")
 
-        # 6) Compute statistics  
+        # Compute statistics
         active_stats = calculate_stats(active_items)
-        sold_stats   = calculate_stats(sold_items)
+        sold_stats = calculate_stats(sold_items)
 
-        # 7) Display metrics and charts  
-        display_metrics(active_stats, sold_stats, get_fee_rate(category))
+        # Display metrics and charts
+        display_metrics(active_stats, sold_stats, api.get_fee_rate(category))
         
-        # 8) Show price distribution chart
+        # Show price distribution chart
         price_fig = generate_price_chart(active_items, sold_items)
         if price_fig:
             st.plotly_chart(price_fig, use_container_width=True)
 
-        # 9) Show volume chart for sold items
+        # Show volume chart for sold items
         volume_fig = generate_volume_chart(active_items, sold_items)
         if volume_fig:
             st.plotly_chart(volume_fig, use_container_width=True)
 
-        # 10) Display item listings
+        # Display item listings
         st.markdown("### eBay Results")
         display_items(active_items, "Active eBay Listings", sort_options=True, pagination=True, page_size=10)
         display_items(sold_items, "Sold eBay Items (30d)", sort_options=True, pagination=True, page_size=10)
 
-        # 11) Show profit calculator  
+        # Show profit calculator
         display_profit_calculator(active_stats, sold_stats, cost, category, flip_type)
 
-        # 12) Display analytics on saved flips  
+        # Display analytics on saved flips
         df = load_flips()
         if not df.empty:
             display_analytics(df)
         
-        # 13) Display footer
+        # Display footer
         st.markdown("""
-        <div class="footer">
+        <div style="margin-top: 50px; padding-top: 20px; border-top: 1px solid #eee; text-align: center; color: #888; font-size: 0.8rem;">
             <p>KwikFlip - Research and track your eBay flips</p>
-            <p style="font-size: 0.8rem;">Version 1.0</p>
+            <p>Version 1.0</p>
         </div>
         """, unsafe_allow_html=True)
     except Exception as e:
@@ -1777,3 +1262,17 @@ if __name__ == "__main__":
     except Exception as e:
         st.error(f"Application error: {e}")
         st.error(traceback.format_exc())
+
+def test_ebay_connection():
+    """Test connection to eBay API"""
+    try:
+        log_debug("Testing eBay API connection")
+        ebay_api = EbayAPI()
+        success, message = ebay_api.test_connection()
+        log_debug(f"Connection test result: {success}, {message}")
+        return success, message
+    except Exception as e:
+        error_msg = f"Error testing eBay connection: {str(e)}"
+        log_debug(error_msg)
+        return False, error_msg
+    

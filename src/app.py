@@ -55,7 +55,29 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
+def test_ebay_connection():
+    """Test the eBay API connection"""
+    try:
+        log_debug("Testing eBay API connection")
+        
+        # Get OAuth token
+        api = st.session_state.ebay_api
+        token, error = api.get_oauth_token(force_refresh=True)
+        
+        if token:
+            log_debug("Successfully acquired OAuth token")
+            return True, "Connection successful! OAuth token acquired."
+        else:
+            error_msg = f"Failed to get OAuth token: {error}"
+            log_debug(error_msg)
+            return False, error_msg
+            
+    except Exception as e:
+        error_msg = f"Error testing eBay connection: {str(e)}"
+        log_debug(error_msg)
+        log_debug(traceback.format_exc())
+        return False, error_msg
+    
 def main():
     """Main application function"""
     try:
