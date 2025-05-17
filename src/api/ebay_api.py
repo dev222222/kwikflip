@@ -99,6 +99,38 @@ class EbayAPI:
         """Enable or disable mock mode."""
         self.use_mock = use_mock
 
+    def fetch_sold_items_finding(self, query, limit=30):
+        """Fetch sold items using the eBay Finding API (findCompletedItems)."""
+        endpoint = "https://svcs.ebay.com/services/search/FindingService/v1"
+        params = {
+            "OPERATION-NAME": "findCompletedItems",
+            "SERVICE-VERSION": "1.13.0",
+            "SECURITY-APPNAME": self.app_id,
+            "RESPONSE-DATA-FORMAT": "JSON",
+            "keywords": query,
+            "paginationInput.entriesPerPage": limit,
+            "outputSelector": "SellerInfo"
+        }
+        response = requests.get(endpoint, params=params, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            items = []
+            for item in data["findCompletedItemsResponse"][0]["searchResult"][0].get("item", []):
+                items.append({
+                    "id": item.get("itemId", [""])[0],
+                    "title": item.get("title", [""])[0],
+                    "url": item.get("viewItemURL", [""])[0],
+                    "image": item.get("galleryURL", ["https://via.placeholder.com/150"])[0],
+                    "price": float(item.get("sellingStatus", [{}])[0].get("currentPrice", [{}])[0].get("__value__", 0)),
+                    "shipping": float(item.get("shippingInfo", [{}])[0].get("shippingServiceCost", [{}])[0].get("__value__", 0)),
+                    "end_time": item.get("listingInfo", [{}])[0].get("endTime", ""),
+                    "condition": item.get("condition", [{}])[0].get("conditionDisplayName", "N/A"),
+                    "sold": True
+                })
+            return items, None
+        else:
+            return [], f"eBay Finding API error: {response.status_code} {response.text}"
+
     def fetch_items(self, query, sold=False, filters=None, limit=30):
         """Fetch items from eBay API (real or mock)."""
         if self.use_mock:
@@ -107,53 +139,45 @@ class EbayAPI:
         if not self.check_credentials():
             return [], "Missing eBay credentials."
 
-        token, error = self.get_oauth_token()
-        if not token:
-            return [], f"OAuth error: {error}"
-
-        try:
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            }
-            if sold:
-                # Use eBay Browse API for sold/completed items
-                endpoint = "https://api.ebay.com/buy/browse/v1/item_summary/search"
-                params = {
-                    "q": query,
-                    "filter": "soldStatus:{SOLD}",
-                    "limit": limit
+        if sold:
+            return self.fetch_sold_items_finding(query, limit=limit)
+        else:
+            token, error = self.get_oauth_token()
+            if not token:
+                return [], f"OAuth error: {error}"
+            try:
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
                 }
-            else:
-                # Use eBay Browse API for active items
                 endpoint = "https://api.ebay.com/buy/browse/v1/item_summary/search"
                 params = {
                     "q": query,
                     "filter": "soldStatus:{ACTIVE}",
                     "limit": limit
                 }
-            response = requests.get(endpoint, headers=headers, params=params, timeout=15)
-            if response.status_code == 200:
-                data = response.json()
-                items = []
-                for item in data.get("itemSummaries", []):
-                    items.append({
-                        "id": item.get("itemId"),
-                        "title": item.get("title"),
-                        "url": item.get("itemWebUrl"),
-                        "image": item.get("image", {}).get("imageUrl", "https://via.placeholder.com/150"),
-                        "price": float(item.get("price", {}).get("value", 0)),
-                        "shipping": float(item.get("shippingOptions", [{}])[0].get("shippingCost", {}).get("value", 0)),
-                        "end_time": item.get("itemEndDate", ""),
-                        "watchers": item.get("watchCount", 0),
-                        "condition": item.get("condition", {}).get("conditionDisplayName", "N/A"),
-                        "sold": sold
-                    })
-                return items, None
-            else:
-                return [], f"eBay API error: {response.status_code} {response.text}"
-        except Exception as e:
-            return self._generate_mock_items(limit, sold), f"Exception: {str(e)} (using mock data)"
+                response = requests.get(endpoint, headers=headers, params=params, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    items = []
+                    for item in data.get("itemSummaries", []):
+                        items.append({
+                            "id": item.get("itemId"),
+                            "title": item.get("title"),
+                            "url": item.get("itemWebUrl"),
+                            "image": item.get("image", {}).get("imageUrl", "https://via.placeholder.com/150"),
+                            "price": float(item.get("price", {}).get("value", 0)),
+                            "shipping": float(item.get("shippingOptions", [{}])[0].get("shippingCost", {}).get("value", 0)),
+                            "end_time": item.get("itemEndDate", ""),
+                            "watchers": item.get("watchCount", 0),
+                            "condition": item.get("condition", {}).get("conditionDisplayName", "N/A"),
+                            "sold": False
+                        })
+                    return items, None
+                else:
+                    return [], f"eBay API error: {response.status_code} {response.text}"
+            except Exception as e:
+                return self._generate_mock_items(limit, False), f"Exception: {str(e)} (using mock data)"
     
     def _generate_mock_items(self, count, sold=False):
         """Generate mock item data for testing"""
