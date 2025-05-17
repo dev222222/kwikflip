@@ -4,29 +4,58 @@ __pycache__/
 *$py.class
 *.so
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.env
+.venv
+env/
 venv/
 ENV/
-env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+data/
+*.log
 
 # Distribution / packaging
-dist/
-build/
 *.egg-info/
 
 # Environment variables
-.env
 .env.local
 .env.development
 
 # IDE/Editor folders
-.idea/
-.vscode/
 *.sublime-*
 
 # OS files
-.DS_Store
-Thumbs.db
-
-# Local data
 *.db
 *.sqlite3
