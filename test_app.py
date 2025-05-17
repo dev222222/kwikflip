@@ -1,110 +1,93 @@
-import streamlit as st
-import pandas as pd
-from src.api.ebay import EbayAPI
-from pathlib import Path
 import os
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
+import traceback
 
-# Load environment variables
-load_dotenv()
+# Add the project root to path so we can import our modules
+sys.path.insert(0, str(Path(__file__).parent))
 
-# Configure page
-st.set_page_config(
-    page_title="KwikFlip - eBay API Test",
-    page_icon="🔍",
-    layout="wide"
-)
+# Create a simple logging function for testing
+def log_debug(message):
+    print(f"DEBUG: {message}")
 
-# Create API instance
-ebay_api = EbayAPI()
+# Add this function to our module path for testing
+sys.modules["src.utils.logging"] = type("MockLoggingModule", (), {"log_debug": log_debug})
 
-# Display header
-st.title("🔍 KwikFlip eBay API Test")
-st.markdown("Test the eBay API integration with real data")
+# Import our EbayAPI class
+from src.api.ebay_api import EbayAPI
 
-# Check environment
-api_env = "PRODUCTION" if os.getenv("EBAY_USE_SANDBOX", "False").lower() == "false" else "SANDBOX"
-st.info(f"Using eBay {api_env} environment")
-
-# Display credentials status
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("Credentials")
-    app_id = os.getenv("EBAY_APP_ID", "")
-    cert_id = os.getenv("EBAY_CERT_ID", "")
+def test_ebay_api():
+    """Test eBay API integration"""
+    print("Testing eBay API integration...")
     
-    if app_id and cert_id:
-        st.success("✅ Credentials configured")
-        st.markdown(f"App ID: `{app_id[:5]}...{app_id[-5:]}`")
-        st.markdown(f"Cert ID: `{cert_id[:5]}...{cert_id[-5:]}`")
+    # Load environment variables
+    load_dotenv()
+    
+    # Print environment variables (masked)
+    app_id = os.getenv("EBAY_APP_ID")
+    cert_id = os.getenv("EBAY_CERT_ID")
+    dev_id = os.getenv("EBAY_DEV_ID")
+    
+    print(f"EBAY_APP_ID: {'✓ Set' if app_id else '✗ Missing'}")
+    print(f"EBAY_CERT_ID: {'✓ Set' if cert_id else '✗ Missing'}")
+    print(f"EBAY_DEV_ID: {'✓ Set' if dev_id else '✗ Missing'}")
+    
+    # Create fake session state for testing
+    class MockSessionState(dict):
+        def __init__(self):
+            self.ebay_oauth_token = None
+            self.ebay_token_expiry = 0
+            
+    # Add mock session state
+    import streamlit as st
+    st.session_state = MockSessionState()
+    
+    # Initialize API
+    api = EbayAPI()
+    
+    # Test OAuth token generation
+    print("\n1. Testing OAuth token generation...")
+    token, error = api.get_oauth_token()
+    
+    if error:
+        print(f"❌ Error getting OAuth token: {error}")
     else:
-        st.error("❌ Credentials missing")
-
-# Test connection
-with col2:
-    st.subheader("Connection Test")
-    if st.button("Test eBay API Connection"):
-        with st.spinner("Testing connection..."):
-            success, message = ebay_api.test_connection()
-            if success:
-                st.success(f"✅ {message}")
-            else:
-                st.error(f"❌ {message}")
-
-# Search form
-st.subheader("Search eBay")
-with st.form("search_form"):
-    query = st.text_input("Search Query", "iphone")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        sold = st.checkbox("Show Sold Items", value=False)
-    
-    with col2:
-        limit = st.slider("Result Limit", 1, 50, 10)
-    
-    with col3:
-        min_price = st.number_input("Min Price", 0, 1000, 0)
-    
-    submitted = st.form_submit_button("Search")
-    
-    if submitted:
-        with st.spinner("Fetching eBay data..."):
-            # Create filters
-            filters = {
-                "min_price": min_price,
-                "condition": "any"
-            }
+        print(f"✅ Successfully obtained OAuth token: {token[:10]}...")
+        
+        # Test fetching active items
+        print("\n2. Testing fetching active items...")
+        items, error = api.fetch_items("iphone", sold=False)
+        
+        if error:
+            print(f"❌ Error fetching active items: {error}")
+        else:
+            print(f"✅ Successfully fetched {len(items)} active items")
             
-            # Fetch items
-            items, error = ebay_api.fetch_items(query, sold=sold, filters=filters, limit=limit)
+            # Print first item
+            if items:
+                print("\nSample item:")
+                for key, value in items[0].items():
+                    print(f"  {key}: {value}")
+        
+        # Test fetching sold items
+        print("\n3. Testing fetching sold items...")
+        items, error = api.fetch_items("airpods", sold=True)
+        
+        if error:
+            print(f"❌ Error fetching sold items: {error}")
+        else:
+            print(f"✅ Successfully fetched {len(items)} sold items")
             
-            if error:
-                st.error(f"Error fetching items: {error}")
-            elif not items:
-                st.warning("No items found")
-            else:
-                st.success(f"Found {len(items)} items")
-                
-                # Convert to DataFrame for display
-                df = pd.DataFrame(items)
-                
-                # Display as table
-                st.dataframe(df)
-                
-                # Display first item details
-                if len(items) > 0:
-                    st.subheader("First Item Details")
-                    item = items[0]
-                    
-                    col1, col2 = st.columns([1, 2])
-                    
-                    with col1:
-                        st.image(item["image"], width=200)
-                    
-                    with col2:
-                        st.markdown(f"**Title:** {item['title']}")
-                        st.markdown(f"**Price:** ${item['price']:.2f}")
-                        st.markdown(f"**Shipping:** ${item['shipping']:.2f}")
-                        st.markdown(f"**Condition:** {item['condition']}")
-                        st.markdown(f"**URL:** [View on eBay]({item['url']})")
+            # Print first item
+            if items:
+                print("\nSample item:")
+                for key, value in items[0].items():
+                    print(f"  {key}: {value}")
+
+if __name__ == "__main__":
+    try:
+        test_ebay_api()
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+        traceback.print_exc()
