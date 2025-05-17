@@ -1,5 +1,5 @@
 import streamlit as st
-from data.storage import save_flip
+from src.data.storage import save_flip
 
 def display_profit_calculator(active_stats, sold_stats, cost, category, flip_type):
     """Display profit calculator with ROI analysis"""

@@ -4,18 +4,18 @@ import os
 from dotenv import load_dotenv
 
 # Import local modules
-from api.ebay import EbayAPI
-from ui.header import display_header
-from ui.sidebar import display_sidebar
-from ui.search import display_search_form, show_recent_searches
-from ui.results import display_items, display_metrics
-from ui.calculator import display_profit_calculator
-from ui.analytics import display_analytics
-from ui.guide import display_quick_start_guide, display_marketplace_comparison
-from data.storage import load_flips, save_flip, load_recent_searches, save_recent_searches
-from utils.stats import calculate_stats
-from utils.charts import generate_price_chart, generate_volume_chart
-from utils.logging import log_debug
+from src.api.ebay_api import EbayAPI
+from src.ui.header import display_header
+from src.ui.sidebar import display_sidebar
+from src.ui.search import display_search_form, show_recent_searches
+from src.ui.results import display_items, display_metrics
+from src.ui.calculator import display_profit_calculator
+from src.ui.analytics import display_analytics
+from src.ui.guide import display_quick_start_guide, display_marketplace_comparison
+from src.data.storage import load_flips, save_flip, load_recent_searches, save_recent_searches
+from src.utils.stats import calculate_stats
+from src.utils.charts import generate_price_chart, generate_volume_chart
+from src.utils.logging import log_debug
 
 # Load environment variables
 load_dotenv()
@@ -47,6 +47,12 @@ if "camera_photo" not in st.session_state:
     st.session_state.camera_photo = None
 if "debug_info" not in st.session_state:
     st.session_state.debug_info = []
+if "use_mock" not in st.session_state:
+    st.session_state.use_mock = True
+if "ebay_api" not in st.session_state:
+    from src.api.ebay_api import EbayAPI
+    st.session_state.ebay_api = EbayAPI()
+    st.session_state.ebay_api.set_mock_mode(st.session_state.use_mock)
 
 # Set page config
 st.set_page_config(
@@ -114,7 +120,7 @@ def main():
 
         # 5) Fetch data
         with st.spinner("Fetching data..."):
-            ebay_api = EbayAPI()
+            ebay_api = st.session_state.ebay_api
             active_items, active_error = ebay_api.fetch_items(query, sold=False, filters=filters)
             sold_items, sold_error = ebay_api.fetch_items(query, sold=True, filters=filters)
             

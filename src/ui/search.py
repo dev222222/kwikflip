@@ -1,6 +1,6 @@
 import streamlit as st
-from utils.logging import log_debug
-from data.storage import save_recent_searches
+from src.utils.logging import log_debug
+from src.data.storage import save_recent_searches
 
 def display_search_form():
     """Display search form with text and image search options"""

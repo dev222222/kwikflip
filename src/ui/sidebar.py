@@ -1,5 +1,5 @@
 import streamlit as st
-from utils.logging import log_debug
+from src.utils.logging import log_debug
 
 def display_sidebar():
     """Display sidebar with filter settings and debug info"""
@@ -44,6 +44,18 @@ def display_sidebar():
             "days_sold": days_sold,
             "exclude_words": exclude_words
         })
+        
+        # Mock/Real data toggle
+        if "use_mock" not in st.session_state:
+            st.session_state.use_mock = True
+        use_mock = st.checkbox(
+            "Use Mock eBay Data (for testing)",
+            value=st.session_state.use_mock,
+            help="Turn off to use real eBay API data (requires valid credentials)"
+        )
+        st.session_state.use_mock = use_mock
+        if "ebay_api" in st.session_state:
+            st.session_state.ebay_api.set_mock_mode(use_mock)
         
         # Debug section
         if st.checkbox("Show Debug Info"):
